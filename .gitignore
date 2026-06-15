@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.coverage
+htmlcov/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Project data — large/regenerable artifacts are NOT committed.
+# (Run scripts/build_dataset.py + scripts/train.py to regenerate.)
+data/raw/
+data/processed/
+
+# Enhancement module (§15): proprietary rating dumps must never be committed.
+data/external/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Keep committed artifacts:
+#   data/wc2026.json        (tournament structure)
+#   models/model.joblib     (trained, small)
+#   models/*.png            (reliability / SHAP figures shown in-app)

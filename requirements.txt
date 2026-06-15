@@ -1,0 +1,30 @@
+# ---------------------------------------------------------------------------
+# Pinned dependencies for the Glass-Box World Cup Predictor.
+# The deployed app (Streamlit Community Cloud) builds from this file unchanged.
+# Target: Python 3.11+ (developed/tested on 3.13). All pins ship 3.11–3.13 wheels.
+# ---------------------------------------------------------------------------
+
+# --- Data / numerics ---
+numpy==2.3.5
+pandas==2.3.3
+
+# --- Machine learning ---
+scikit-learn==1.8.0
+xgboost==3.2.0
+shap==0.52.0
+
+# --- Plotting (Plotly for the UI, matplotlib for SHAP figures) ---
+plotly==5.24.1
+matplotlib==3.10.8
+
+# --- App / serialization ---
+streamlit==1.58.0
+joblib==1.5.3
+
+# --- Optional Phase-2 API stub (api/main.py); harmless for the Streamlit build ---
+fastapi==0.137.1
+uvicorn==0.49.0
+
+# --- Dev tooling (lint + tests, used by CI) ---
+ruff==0.15.17
+pytest==9.0.1

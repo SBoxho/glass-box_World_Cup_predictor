@@ -1,0 +1,8 @@
+[theme]
+base = "light"
+primaryColor = "#2563eb"
+font = "sans serif"
+
+[server]
+# Friendlier defaults for local runs; Streamlit Cloud overrides as needed.
+headless = true

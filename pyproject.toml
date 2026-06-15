@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "glassbox-worldcup"
+version = "0.1.0"
+description = "Glass-box 2026 FIFA World Cup predictor: calibrated XGBoost + SHAP explanations + Monte Carlo tournament simulation."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Sebastien Boxho" }]
+keywords = ["football", "world-cup", "machine-learning", "shap", "explainability", "xgboost"]
+
+# Runtime deps are pinned in requirements.txt (the deployable source of truth).
+# This list is unpinned on purpose so `pip install -e .` stays flexible for dev.
+dependencies = [
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "xgboost",
+    "shap",
+    "plotly",
+    "matplotlib",
+    "streamlit",
+    "joblib",
+]
+
+[project.optional-dependencies]
+api = ["fastapi", "uvicorn"]
+dev = ["ruff", "pytest"]
+
+[tool.setuptools]
+# The reusable, UI-agnostic package. `app/` and `api/` import from here, never the reverse.
+packages = ["core"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["data", "models"]
+
+[tool.ruff.lint]
+# pycodestyle (E, W), Pyflakes (F), isort (I), pyupgrade (UP),
+# flake8-bugbear (B), comprehensions (C4), simplify (SIM)
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM"]
+ignore = [
+    "E501",  # line length is handled by the formatter, not the linter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B", "SIM"]
+# Plotly layouts read most naturally with dict(...) kwargs — keep that idiom in the UI layer.
+"app/*" = ["C408"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+    # XGBoost/SHAP/sklearn emit benign deprecation chatter on newer numpy.
+    "ignore::DeprecationWarning",
+    "ignore::FutureWarning",
+]
