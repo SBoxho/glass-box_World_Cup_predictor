@@ -11,7 +11,8 @@ pandas==2.3.3
 # --- Machine learning ---
 scikit-learn==1.8.0
 xgboost==3.2.0
-shap==0.52.0
+# shap 0.52 requires Python >=3.12; 0.51 keeps the project compatible with 3.11 (the pinned target).
+shap==0.51.0
 
 # --- Plotting (Plotly for the UI, matplotlib for SHAP figures) ---
 plotly==5.24.1
