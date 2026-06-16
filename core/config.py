@@ -21,6 +21,7 @@ MODELS_DIR = BASE_DIR / "models"
 
 WC2026_PATH = DATA_DIR / "wc2026.json"
 RAW_RESULTS_PATH = RAW_DIR / "results.csv"
+WC2026_LIVE_CACHE_PATH = RAW_DIR / "wc2026_live.json"  # cached live-results snapshot (gitignored)
 MATCHES_PATH = PROCESSED_DIR / "matches.parquet"
 FEATURES_PATH = PROCESSED_DIR / "features.parquet"
 ELO_HISTORY_PATH = PROCESSED_DIR / "elo_history.parquet"
@@ -32,6 +33,12 @@ SHAP_SUMMARY_PATH = MODELS_DIR / "shap_summary.png"
 
 # Source for international match history (no auth required — public GitHub mirror).
 RESULTS_URL = "https://raw.githubusercontent.com/martj42/international_results/master/results.csv"
+
+# Live 2026 World Cup results (no auth required — public-domain/CC0 openfootball mirror). Used to
+# lock already-played group matches so the tournament simulator runs forward from current standings.
+WC2026_LIVE_URL = (
+    "https://raw.githubusercontent.com/openfootball/worldcup.json/master/2026/worldcup.json"
+)
 
 # --------------------------------------------------------------------------------------
 # Reproducibility

@@ -33,7 +33,9 @@ The probabilities are genuinely usable as probabilities — expected calibration
   (*"The model leans England: + neutral venue, + scoring form; tempered by head-to-head record."*).
 - **Tournament Simulator** — Monte Carlo over the full 48-team bracket (12 groups → top 2 + 8
   best thirds → Round of 32 → Final) to each team's probability of reaching every stage and
-  lifting the trophy, plus the most-likely final.
+  lifting the trophy, plus the most-likely final. **Refresh live results** to lock already-played
+  group matches (free CC0 [openfootball](https://github.com/openfootball/worldcup.json) feed, no
+  API key) and re-simulate forward from the current standings; works offline if you skip it.
 - **Under the Hood** — global SHAP summary, the calibration curve, and an honest temporal
   backtest against baselines, with a methodology + limitations write-up.
 
