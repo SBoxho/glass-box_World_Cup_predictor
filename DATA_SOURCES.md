@@ -37,6 +37,30 @@ download steps — **no raw third-party dumps are committed** to the repository.
 - **Caveat:** scores reflect upstream community freshness and may lag or contain placeholder data —
   verify against official results before trusting a committed snapshot. No raw dump is committed.
 
+### FIFA men's world ranking
+- **History source:** [`Dato-Futbol/fifa-ranking`](https://github.com/Dato-Futbol/fifa-ranking) —
+  a community compilation of the public FIFA/Coca-Cola Men's World Ranking
+  (`team, total_points, date`), Dec 1992 → Sept 2024.
+- **Access:** downloaded at build time from the public GitHub raw mirror by
+  [`core/ranking.py`](core/ranking.py); cached under `data/raw/` (gitignored). **No API key required.**
+  Not committed as a raw dump.
+- **Current snapshot (committed):** [`data/fifa_ranking_2026.json`](data/fifa_ranking_2026.json) —
+  the official **11 June 2026** ranking points for the WC-2026 teams in the top 20 (small, factual,
+  public data). Appended to the history as one more dated snapshot so 2026 predictions use current
+  points; any WC team not in the snapshot falls back to its latest historical ranking (~Sept 2024).
+- **License:** the underlying ranking is published by FIFA (public facts); the compilation is a
+  community dataset, used here for educational purposes with attribution.
+- **Use here:** attached **point-in-time** (the latest ranking dated on/before each match — leak-free,
+  see `core.ranking.points_as_of`) as the `fifa_points_diff` model feature and a third baseline
+  (FIFA-only) in [`core/model.py`](core/model.py).
+- **Caveats:** (1) FIFA changed its points method in 2018 (SUM → Elo-based), so absolute points are
+  not comparable across that boundary — the model only ever uses a *same-date* difference between two
+  teams, so within-match scale is consistent, but the feature's distribution shifts across eras.
+  (2) The free history feed ends Sept 2024; recent matches before the 11 Jun 2026 snapshot use the
+  latest pre-2024 ranking. (3) FIFA points are **strongly correlated with Elo** (Pearson r ≈ 0.74 on
+  the training set) — the feature adds little independent signal; this is reported honestly in the
+  app's "Under the Hood" tab (the FIFA-only baseline is in fact slightly weaker than Elo-only).
+
 ---
 
 ## Planned enhancement (not yet integrated)

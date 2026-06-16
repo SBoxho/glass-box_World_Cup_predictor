@@ -21,6 +21,7 @@ import pandas as pd
 
 from core import config
 from core.elo import compute_elo, ratings_as_of
+from core.ranking import points_as_of
 
 # Identifier columns carried alongside features for training / filtering / display.
 # (``neutral`` is intentionally not repeated here — it is already a model feature.)
@@ -69,6 +70,34 @@ def _rest_days(last_date, ref_date) -> float:
     return float(min((ref_date - last_date).days, config.MAX_REST_DAYS))
 
 
+def _attach_points_diff(matches: pd.DataFrame, rankings: pd.DataFrame | None) -> pd.Series:
+    """Vectorized point-in-time FIFA ``home_points - away_points`` for every match.
+
+    For each side, ``merge_asof`` (backward, allow-exact) takes the latest ranking with
+    ``date <= match date`` — the leak-free as-of join, equivalent to
+    :func:`core.ranking.points_as_of`. Missing teams/dates default to ``FIFA_POINTS_BASE`` (so an
+    unranked-vs-unranked match has a 0 difference). ``rankings=None`` yields all zeros (back-compat).
+    """
+    base = config.FIFA_POINTS_BASE
+    if rankings is None or len(rankings) == 0:
+        return pd.Series(0.0, index=matches.index)
+    rk = rankings[["team", "total_points", "date"]].sort_values("date", kind="mergesort")
+
+    def _side(team_col: str) -> pd.Series:
+        left = (
+            matches[["date", team_col]]
+            .rename(columns={team_col: "team"})
+            .reset_index()  # stash the original index so we can realign after the asof sort
+            .sort_values("date", kind="mergesort")
+        )
+        merged = pd.merge_asof(
+            left, rk, on="date", by="team", direction="backward", allow_exact_matches=True
+        )
+        return merged.set_index("index")["total_points"].reindex(matches.index).fillna(base)
+
+    return (_side("home_team") - _side("away_team")).astype(float)
+
+
 def _outcome_points(team_is_home: bool, result: str) -> int:
     """3/1/0 points for a team given the {H,D,A} result and whether it was the home side."""
     if result == "D":
@@ -80,13 +109,18 @@ def _outcome_points(team_is_home: bool, result: str) -> int:
 # --------------------------------------------------------------------------------------
 # Batch pipeline
 # --------------------------------------------------------------------------------------
-def build_features(matches: pd.DataFrame, train_start_year: int | None = None) -> pd.DataFrame:
+def build_features(
+    matches: pd.DataFrame,
+    rankings: pd.DataFrame | None = None,
+    train_start_year: int | None = None,
+) -> pd.DataFrame:
     """Build the full feature table from a cleaned, date-sorted match frame.
 
     Elo is added in a batched pass; the rolling form / head-to-head / rest features are then
     accumulated in a single date-batched loop (state is updated only *after* a day's features
-    are read, so same-day matches never see each other). Optionally filters the returned rows
-    to ``year >= train_start_year`` while still having used full history to warm up the state.
+    are read, so same-day matches never see each other). The FIFA-points difference is attached
+    point-in-time from ``rankings`` (see :func:`_attach_points_diff`). Optionally filters the
+    returned rows to ``year >= train_start_year`` while still having used full history to warm up.
     """
     df = compute_elo(matches)
 
@@ -144,6 +178,7 @@ def build_features(matches: pd.DataFrame, train_start_year: int | None = None) -
         for nt, tn in zip(out["neutral"], out["tournament"], strict=False)
     ]
     out["neutral"] = out["neutral"].astype(int)
+    out["fifa_points_diff"] = _attach_points_diff(out, rankings)
 
     cols = config.FEATURES + [c for c in META_COLUMNS if c not in config.FEATURES]
     result = out[cols]
@@ -162,18 +197,25 @@ def features_for_match(
     date: pd.Timestamp,
     neutral: bool,
     is_host_home: int | bool,
+    rankings: pd.DataFrame | None = None,
 ) -> dict[str, float]:
     """Compute one match's features from a history frame, using only rows before ``date``.
 
-    ``history`` may contain anything; only matches strictly before ``date`` are used. Returns
-    a dict keyed by :data:`core.config.FEATURES`. This is the inference path and the reference
-    implementation the no-leakage test checks ``build_features`` against.
+    ``history`` may contain anything; only matches strictly before ``date`` are used. The FIFA
+    points difference comes from ``rankings`` as of ``date`` (``<=``, matching the batch
+    ``merge_asof``). Returns a dict keyed by :data:`core.config.FEATURES`. This is the inference
+    path and the reference implementation the no-leakage test checks ``build_features`` against.
     """
     date = pd.Timestamp(date)
     hist = history[history["date"] < date]
 
     ratings = ratings_as_of(hist, None)  # hist already excludes >= date
     elo_diff = ratings.get(home, config.ELO_BASE) - ratings.get(away, config.ELO_BASE)
+
+    fifa_pts = points_as_of(rankings, date)
+    fifa_points_diff = fifa_pts.get(home, config.FIFA_POINTS_BASE) - fifa_pts.get(
+        away, config.FIFA_POINTS_BASE
+    )
 
     form_home, gd_home = _ppg_gd(_team_form_list(hist, home))
     form_away, gd_away = _ppg_gd(_team_form_list(hist, away))
@@ -198,6 +240,7 @@ def features_for_match(
 
     return {
         "elo_diff": elo_diff,
+        "fifa_points_diff": fifa_points_diff,
         "form_home": form_home,
         "form_away": form_away,
         "gd_home": gd_home,
@@ -246,6 +289,7 @@ class InferenceState:
     pair_hist: dict[frozenset, list]
     as_of: pd.Timestamp
     teams: list[str] = field(default_factory=list)
+    fifa_points: dict[str, float] = field(default_factory=dict)  # current points (latest snapshot)
 
     def feature_row(
         self,
@@ -262,6 +306,8 @@ class InferenceState:
         return {
             "elo_diff": self.ratings.get(home, config.ELO_BASE)
             - self.ratings.get(away, config.ELO_BASE),
+            "fifa_points_diff": self.fifa_points.get(home, config.FIFA_POINTS_BASE)
+            - self.fifa_points.get(away, config.FIFA_POINTS_BASE),
             "form_home": fh,
             "form_away": fa,
             "gd_home": gh,
@@ -276,8 +322,14 @@ class InferenceState:
         }
 
 
-def build_inference_state(matches: pd.DataFrame) -> InferenceState:
-    """Replay the full history once to capture each team's current strength state."""
+def build_inference_state(
+    matches: pd.DataFrame, rankings: pd.DataFrame | None = None
+) -> InferenceState:
+    """Replay the full history once to capture each team's current strength state.
+
+    ``rankings`` (if given) sets each team's current FIFA points to the latest snapshot — for the
+    deployed 2026 predictor this is the committed current-ranking snapshot.
+    """
     ratings = ratings_as_of(matches, None)
     team_form: dict[str, list] = {}
     team_last_date: dict[str, pd.Timestamp] = {}
@@ -300,4 +352,5 @@ def build_inference_state(matches: pd.DataFrame) -> InferenceState:
         pair_hist=pair_hist,
         as_of=matches["date"].max(),
         teams=sorted(set(matches["home_team"]) | set(matches["away_team"])),
+        fifa_points=points_as_of(rankings, None),
     )

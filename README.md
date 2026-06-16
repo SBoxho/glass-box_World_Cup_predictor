@@ -79,9 +79,9 @@ signal of production-quality structure here.
 2. **Elo** — chess-style ratings replayed over full history; the K-factor scales with goal
    margin and tournament importance (friendly < qualifier < World Cup), and home advantage lives
    in the *expectation* and is zeroed at neutral venues.
-3. **Point-in-time features (no leakage)** — Elo gap, recent form & goal difference, decayed
-   head-to-head, venue, host advantage, days of rest — each computed using **only matches
-   strictly before** the match date.
+3. **Point-in-time features (no leakage)** — Elo gap, FIFA-ranking points gap, recent form & goal
+   difference, decayed head-to-head, venue, host advantage, days of rest — each computed using
+   **only matches (and ranking snapshots) dated on/before** the match date.
 4. **Calibrated XGBoost** — a multiclass {H, D, A} model, isotonic-calibrated via cross-validation
    so the outputs are real probabilities, not just argmax labels. Neutral-venue predictions are
    symmetrized so `predict(A, B)` mirrors `predict(B, A)`.
@@ -99,13 +99,17 @@ recent **3,357** completed internationals (2023-06-15 → 2026-06-14).
 
 | Model | Log-loss ↓ | Accuracy ↑ | ECE ↓ |
 | --- | --- | --- | --- |
-| **Calibrated XGBoost** | **0.8714** | 0.605 | **0.0069** |
-| Baseline: Elo-only (logistic) | 0.8647 | 0.606 | — |
+| **Calibrated XGBoost** | 0.8703 | 0.606 | **0.0081** |
+| Baseline: Elo-only (logistic) | **0.8647** | 0.606 | — |
+| Baseline: FIFA-ranking-only (logistic) | 0.9288 | 0.580 | — |
 | Baseline: always-home | 1.0526 | 0.474 | — |
 
 **The honest takeaway:** in international football, Elo is a *very* strong baseline. The ML model
-essentially **matches** it on accuracy and log-loss — it does **not** meaningfully beat it. What
-the model adds is excellent **calibration** (ECE ≈ 0.007 — the reliability curve hugs the
+essentially **matches** it on accuracy and log-loss — it does **not** meaningfully beat it (Elo-only
+in fact edges it slightly on log-loss). Adding the **FIFA-ranking points gap** changes nothing: it
+is strongly correlated with Elo (Pearson r ≈ 0.74), and on its own it is a *weaker* signal than Elo
+(FIFA-only log-loss 0.929 vs Elo's 0.865) — so it earns its place as an honest baseline, not a lift.
+What the model adds is excellent **calibration** (ECE ≈ 0.008 — the reliability curve hugs the
 diagonal), per-prediction **explainability**, and a tournament **simulation** layer. Reporting a
 small/null accuracy gain transparently is the point: a glass box tells you what it can and can't do.
 

@@ -18,7 +18,7 @@ import streamlit as st
 # Make `core` importable when Streamlit runs this file directly.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core import config, explain, ingest, live, model, simulate  # noqa: E402
+from core import config, explain, ingest, live, model, ranking, simulate  # noqa: E402
 from core.features import build_inference_state  # noqa: E402
 from core.model import predict_from_features  # noqa: E402
 
@@ -47,7 +47,11 @@ def load_state():
         matches = pd.read_parquet(config.MATCHES_PATH)
     else:  # deployed: processed data is not committed — build it from the public source
         matches = ingest.get_clean_matches()
-    return matches, build_inference_state(matches)
+    if config.RANKINGS_PATH.exists():
+        rankings = pd.read_parquet(config.RANKINGS_PATH)
+    else:  # deployed: rebuild from the public ranking feed + committed 2026 snapshot
+        rankings = ranking.load_rankings()
+    return matches, build_inference_state(matches, rankings)
 
 
 @st.cache_resource(show_spinner=False)
@@ -188,6 +192,13 @@ def tab_predictor(predictor, artifact, explainer, wc, state):
         m1, m2 = st.columns(2)
         m1.metric(f"{team_a} Elo", f"{elo_a:.0f}")
         m2.metric(f"{team_b} Elo", f"{elo_b:.0f}", delta=f"{elo_a - elo_b:+.0f} vs {team_a}")
+        fifa_a, fifa_b = state.fifa_points.get(team_a), state.fifa_points.get(team_b)
+        if fifa_a is not None and fifa_b is not None:
+            g1, g2 = st.columns(2)
+            g1.metric(f"{team_a} FIFA pts", f"{fifa_a:.0f}")
+            g2.metric(
+                f"{team_b} FIFA pts", f"{fifa_b:.0f}", delta=f"{fifa_a - fifa_b:+.0f} vs {team_a}"
+            )
         st.info(ex["narrative"])
     with right:
         st.markdown("**Why? — SHAP feature contributions**")
@@ -363,28 +374,38 @@ def tab_under_the_hood(metrics, wc, artifact):
             f"({sp['trainval'][2]:,} matches), tested on the most recent {sp['test'][2]:,} "
             f"({sp['test'][0]} → {sp['test'][1]}). No random folds — strictly chronological."
         )
-        comp = pd.DataFrame(
-            [
+        rows = [
+            {
+                "Model": "Calibrated XGBoost",
+                "Log-loss ↓": m["logloss"],
+                "Accuracy ↑": m["accuracy"],
+                "ECE ↓": m["reliability"]["ece"],
+            },
+            {
+                "Model": "Baseline: Elo-only",
+                "Log-loss ↓": b["elo_only"]["logloss"],
+                "Accuracy ↑": b["elo_only"]["accuracy"],
+                "ECE ↓": float("nan"),
+            },
+        ]
+        if "fifa_only" in b:
+            rows.append(
                 {
-                    "Model": "Calibrated XGBoost",
-                    "Log-loss ↓": m["logloss"],
-                    "Accuracy ↑": m["accuracy"],
-                    "ECE ↓": m["reliability"]["ece"],
-                },
-                {
-                    "Model": "Baseline: Elo-only",
-                    "Log-loss ↓": b["elo_only"]["logloss"],
-                    "Accuracy ↑": b["elo_only"]["accuracy"],
+                    "Model": "Baseline: FIFA-ranking-only",
+                    "Log-loss ↓": b["fifa_only"]["logloss"],
+                    "Accuracy ↑": b["fifa_only"]["accuracy"],
                     "ECE ↓": float("nan"),
-                },
-                {
-                    "Model": "Baseline: always-home",
-                    "Log-loss ↓": b["always_home"]["logloss"],
-                    "Accuracy ↑": b["always_home"]["accuracy"],
-                    "ECE ↓": float("nan"),
-                },
-            ]
+                }
+            )
+        rows.append(
+            {
+                "Model": "Baseline: always-home",
+                "Log-loss ↓": b["always_home"]["logloss"],
+                "Accuracy ↑": b["always_home"]["accuracy"],
+                "ECE ↓": float("nan"),
+            }
         )
+        comp = pd.DataFrame(rows)
         st.dataframe(
             comp,
             hide_index=True,
@@ -400,6 +421,16 @@ def tab_under_the_hood(metrics, wc, artifact):
             "essentially matches Elo on accuracy and log-loss. Its value is **calibration** "
             "(near-zero ECE), **explainability** (SHAP), and **simulation**, not raw accuracy."
         )
+        r = (metrics.get("feature_notes") or {}).get("elo_fifa_pearson")
+        if r is not None:
+            st.caption(
+                f"**FIFA ranking vs Elo:** the FIFA-points gap and the Elo gap are strongly "
+                f"correlated (Pearson r ≈ {r:.2f}) — they measure overlapping strength. On this "
+                f"backtest the FIFA-only baseline is in fact a bit *weaker* than Elo-only, and "
+                f"adding FIFA points on top of Elo gives no measurable lift (the model still just "
+                f"ties the Elo baseline). It is included for transparency and as a baseline, not "
+                f"because it moves the model — the honest takeaway is that Elo already captures it."
+            )
 
     c1, c2 = st.columns(2)
     with c1:

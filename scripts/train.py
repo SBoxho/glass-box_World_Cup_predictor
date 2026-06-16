@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd  # noqa: E402
 
-from core import config, features, ingest, model  # noqa: E402
+from core import config, features, ingest, model, ranking  # noqa: E402
 
 
 def _load_features() -> pd.DataFrame:
@@ -32,7 +32,10 @@ def _load_features() -> pd.DataFrame:
         return pd.read_parquet(config.FEATURES_PATH)
     print("features.parquet not found — building it from match history first ...")
     matches = ingest.get_clean_matches()
-    return features.build_features(matches, train_start_year=config.TRAIN_START_YEAR)
+    rankings = ranking.load_rankings()
+    return features.build_features(
+        matches, rankings=rankings, train_start_year=config.TRAIN_START_YEAR
+    )
 
 
 def _plot_reliability(metrics: dict, path: Path) -> None:
@@ -91,9 +94,14 @@ def main() -> None:
         f"acc={m['baselines']['elo_only']['accuracy']:.3f}"
     )
     print(
+        f"  {'baseline: FIFA-only':<26} logloss={m['baselines']['fifa_only']['logloss']:.4f}  "
+        f"acc={m['baselines']['fifa_only']['accuracy']:.3f}"
+    )
+    print(
         f"  {'baseline: always-home':<26} logloss={m['baselines']['always_home']['logloss']:.4f}  "
         f"acc={m['baselines']['always_home']['accuracy']:.3f}"
     )
+    print(f"\nElo <-> FIFA-points Pearson r: {m['feature_notes']['elo_fifa_pearson']:.3f}")
     print(
         f"\nSaved: {config.MODEL_PATH.name}, {config.METRICS_PATH.name}, "
         f"{config.RELIABILITY_PLOT_PATH.name}"

@@ -119,9 +119,8 @@ def _baseline_always_home(train: pd.DataFrame, test: pd.DataFrame) -> dict:
     }
 
 
-def _baseline_elo_only(train: pd.DataFrame, test: pd.DataFrame) -> dict:
-    """Multinomial logistic regression on Elo gap + venue only — the 'no ML features' bar."""
-    cols = ["elo_diff", "neutral"]
+def _baseline_logreg(train: pd.DataFrame, test: pd.DataFrame, cols: list[str]) -> dict:
+    """Multinomial logistic regression on ``cols`` only — a 'single strength signal' bar."""
     lr = LogisticRegression(max_iter=1000, C=1.0)
     lr.fit(train[cols], _encode_y(train["result"]))
     probs = lr.predict_proba(test[cols])
@@ -132,6 +131,16 @@ def _baseline_elo_only(train: pd.DataFrame, test: pd.DataFrame) -> dict:
         "logloss": float(log_loss(y, probs, labels=[0, 1, 2])),
         "accuracy": float(accuracy_score(y, probs.argmax(1))),
     }
+
+
+def _baseline_elo_only(train: pd.DataFrame, test: pd.DataFrame) -> dict:
+    """Logistic regression on Elo gap + venue only — the original 'no ML features' bar."""
+    return _baseline_logreg(train, test, ["elo_diff", "neutral"])
+
+
+def _baseline_fifa_only(train: pd.DataFrame, test: pd.DataFrame) -> dict:
+    """Logistic regression on FIFA-points gap + venue only — the third baseline (vs Elo-only)."""
+    return _baseline_logreg(train, test, ["fifa_points_diff", "neutral"])
 
 
 # --------------------------------------------------------------------------------------
@@ -206,8 +215,15 @@ def train_model(features_df: pd.DataFrame) -> ModelArtifact:
         "baselines": {
             "always_home": _baseline_always_home(trainval, test),
             "elo_only": _baseline_elo_only(trainval, test),
+            "fifa_only": _baseline_fifa_only(trainval, test),
         },
         "features": FEATURES,
+        "feature_notes": {
+            # Elo and FIFA points measure overlapping things — report the collinearity honestly.
+            "elo_fifa_pearson": float(
+                features_df["elo_diff"].corr(features_df["fifa_points_diff"])
+            ),
+        },
     }
 
     # 2) Production model + raw SHAP model: refit on ALL available data.
@@ -247,6 +263,7 @@ def reverse_features(f: dict) -> dict:
     """Swap home/away in a feature dict (the mirror used for neutral-venue symmetrization)."""
     return {
         "elo_diff": -f["elo_diff"],
+        "fifa_points_diff": -f["fifa_points_diff"],
         "form_home": f["form_away"],
         "form_away": f["form_home"],
         "gd_home": f["gd_away"],
