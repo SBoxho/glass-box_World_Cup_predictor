@@ -3,10 +3,14 @@
 **Calibrated match predictions you can see *inside* — every probability comes with its SHAP
 explanation, then a Monte Carlo simulation rolls them up to title odds for the 48-team 2026 World Cup.**
 
-> 🔗 **Live demo:** _deploy in ~2 minutes — see [Deployment](#-deployment)_ →
-> `https://<your-app>.streamlit.app`
->
-> 📸 _Add a screenshot/GIF of your deployed app here — it's the single highest-value element of a portfolio README._
+### 🔗 [**Live demo → glass-box-world-cup-predictor.streamlit.app**](https://glass-box-world-cup-predictor.streamlit.app/)
+
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://glass-box-world-cup-predictor.streamlit.app/)
+[![CI](https://github.com/SBoxho/glass-box_World_Cup_predictor/actions/workflows/ci.yml/badge.svg)](https://github.com/SBoxho/glass-box_World_Cup_predictor/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+> 📸 _Tip: drop a screenshot/GIF of the live app here — for a portfolio repo the visual is the single highest-value element above the fold._
 
 The differentiator is **transparency, not just accuracy**: a glass box, not a black box. Most
 football predictors hand you a number. This one shows you *why* — the Elo gap, recent form,
@@ -166,13 +170,13 @@ Optional API stub: `uvicorn api.main:app --reload` → `GET /predict?home=Brazil
 
 ## 🌐 Deployment
 
-**Streamlit Community Cloud (recommended, free):**
+**Live on Streamlit Community Cloud:**
+[glass-box-world-cup-predictor.streamlit.app](https://glass-box-world-cup-predictor.streamlit.app/)
+— it builds from the pinned `requirements.txt` and auto-redeploys on every push to `main`.
 
-1. Push this repo to GitHub.
-2. Go to [share.streamlit.io](https://share.streamlit.io), connect the repo, set the entrypoint to
-   `app/streamlit_app.py`. It builds from the pinned `requirements.txt` and gives you a public
-   `*.streamlit.app` URL that auto-redeploys on push.
-3. Put that URL (and a screenshot) at the top of this README.
+To deploy your own fork: push to GitHub, then on [share.streamlit.io](https://share.streamlit.io)
+connect the repo with entrypoint `app/streamlit_app.py`. The committed `models/model.joblib` lets
+it boot without training; the app downloads the match history it needs on first launch.
 
 **Hugging Face Spaces (Streamlit SDK)** — a free second mirror. Create a Space and add this YAML
 header to the very top of the `README.md` you push there:
