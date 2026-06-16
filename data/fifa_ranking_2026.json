@@ -1,0 +1,26 @@
+{
+  "as_of": "2026-06-11",
+  "source": "Official FIFA/Coca-Cola Men's World Ranking, 11 June 2026 edition (via en.wikipedia.org/wiki/FIFA_Men's_World_Ranking).",
+  "_comment": "Current-ranking snapshot appended to the historical ranking time series so 2026 predictions use up-to-date FIFA points. Verified points are included for the WC-2026 teams ranked in the official top 20 (the title favourites, where freshness matters most). The remaining WC teams are NOT listed here; core.ranking.load_rankings concatenates this snapshot with the 1992->2024 history feed, so any team absent here falls back to its latest available historical ranking (Sept 2024) via points_as_of. Points use FIFA's post-2018 (Elo-based) method. Public factual data; see DATA_SOURCES.md.",
+  "ranking": [
+    { "team": "Argentina", "rank": 1, "points": 1877.27 },
+    { "team": "Spain", "rank": 2, "points": 1874.71 },
+    { "team": "France", "rank": 3, "points": 1870.7 },
+    { "team": "England", "rank": 4, "points": 1828.02 },
+    { "team": "Portugal", "rank": 5, "points": 1767.85 },
+    { "team": "Brazil", "rank": 6, "points": 1765.86 },
+    { "team": "Morocco", "rank": 7, "points": 1755.1 },
+    { "team": "Netherlands", "rank": 8, "points": 1753.57 },
+    { "team": "Belgium", "rank": 9, "points": 1742.24 },
+    { "team": "Germany", "rank": 10, "points": 1735.77 },
+    { "team": "Croatia", "rank": 11, "points": 1714.87 },
+    { "team": "Colombia", "rank": 13, "points": 1698.35 },
+    { "team": "Mexico", "rank": 14, "points": 1687.48 },
+    { "team": "Senegal", "rank": 15, "points": 1684.07 },
+    { "team": "Uruguay", "rank": 16, "points": 1673.07 },
+    { "team": "United States", "rank": 17, "points": 1671.23 },
+    { "team": "Japan", "rank": 18, "points": 1661.58 },
+    { "team": "Switzerland", "rank": 19, "points": 1650.06 },
+    { "team": "Iran", "rank": 20, "points": 1619.58 }
+  ]
+}

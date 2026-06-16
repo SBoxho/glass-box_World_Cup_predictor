@@ -22,8 +22,13 @@ MODELS_DIR = BASE_DIR / "models"
 WC2026_PATH = DATA_DIR / "wc2026.json"
 RAW_RESULTS_PATH = RAW_DIR / "results.csv"
 WC2026_LIVE_CACHE_PATH = RAW_DIR / "wc2026_live.json"  # cached live-results snapshot (gitignored)
+FIFA_RANKING_CACHE_PATH = (
+    RAW_DIR / "fifa_ranking_history.csv"
+)  # cached ranking history (gitignored)
+FIFA_RANKING_2026_PATH = DATA_DIR / "fifa_ranking_2026.json"  # committed current-ranking snapshot
 MATCHES_PATH = PROCESSED_DIR / "matches.parquet"
 FEATURES_PATH = PROCESSED_DIR / "features.parquet"
+RANKINGS_PATH = PROCESSED_DIR / "rankings.parquet"
 ELO_HISTORY_PATH = PROCESSED_DIR / "elo_history.parquet"
 
 MODEL_PATH = MODELS_DIR / "model.joblib"
@@ -39,6 +44,19 @@ RESULTS_URL = "https://raw.githubusercontent.com/martj42/international_results/m
 WC2026_LIVE_URL = (
     "https://raw.githubusercontent.com/openfootball/worldcup.json/master/2026/worldcup.json"
 )
+
+# Historical FIFA men's world ranking (no auth required — community compilation of public FIFA
+# data). A single combined CSV (team, total_points, date) spanning 1992 → 2024; attached
+# point-in-time to each match. Combined with the committed FIFA_RANKING_2026_PATH snapshot so
+# current 2026 predictions use up-to-date points. See DATA_SOURCES.md.
+FIFA_RANKING_URL = (
+    "https://raw.githubusercontent.com/Dato-Futbol/fifa-ranking/master/ranking_fifa_historical.csv"
+)
+
+# Default FIFA points for a team with no ranking on/before a given date (e.g. unranked early-era
+# sides). A fixed constant so the batch and single-match feature paths agree exactly — the
+# no-leakage guardrail depends on that identity.
+FIFA_POINTS_BASE = 1000.0
 
 # --------------------------------------------------------------------------------------
 # Reproducibility
@@ -70,6 +88,7 @@ TEST_YEARS = 3
 # and inference rebuilds the row in exactly this order.
 FEATURES = [
     "elo_diff",  # home Elo - away Elo (venue-neutral skill estimate)
+    "fifa_points_diff",  # home FIFA points - away FIFA points, as of the match date (point-in-time)
     "form_home",  # points-per-game over last FORM_WINDOW matches
     "form_away",
     "gd_home",  # avg goal difference over last FORM_WINDOW matches
@@ -167,6 +186,7 @@ TEAM_ALIASES = {
     "côte d'ivoire": "Ivory Coast",
     "cote d'ivoire": "Ivory Coast",
     "cabo verde": "Cape Verde",
+    "cape verde islands": "Cape Verde",
     "ir iran": "Iran",
     "iran (islamic republic of)": "Iran",
     "congo dr": "DR Congo",

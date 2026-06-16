@@ -72,3 +72,28 @@ def make_synthetic_matches(seed: int = 0, n_days: int = 500) -> pd.DataFrame:
 @pytest.fixture(scope="session")
 def synthetic_matches() -> pd.DataFrame:
     return make_synthetic_matches(seed=7, n_days=600)
+
+
+def make_synthetic_rankings(seed: int = 11) -> pd.DataFrame:
+    """Generate a tidy ``(team, total_points, date)`` ranking time series for the synthetic teams.
+
+    Snapshots are spaced ~120 days apart across the match window so they interleave with matches
+    (giving the point-in-time as-of join real bite), and each team's points drift over time, so
+    the FIFA feature is non-constant and time-varying — exactly what the no-leakage test needs.
+    """
+    rng = np.random.default_rng(seed)
+    base = {t: 1000.0 + 50.0 * i for i, t in enumerate(TEAMS)}  # distinct per team
+    dates = pd.date_range("2008-02-01", "2020-12-01", freq="120D")
+    rows = [
+        {"team": t, "total_points": round(float(base[t] + rng.normal(0, 30)), 2), "date": d}
+        for d in dates
+        for t in TEAMS
+    ]
+    df = pd.DataFrame(rows)
+    df["date"] = pd.to_datetime(df["date"])
+    return df.sort_values("date", kind="mergesort").reset_index(drop=True)
+
+
+@pytest.fixture(scope="session")
+def synthetic_rankings() -> pd.DataFrame:
+    return make_synthetic_rankings(seed=11)
