@@ -308,10 +308,10 @@ def tab_simulator(predictor, artifact, wc):
         width="stretch",
         hide_index=True,
         column_config={
-            **{
-                c: st.column_config.ProgressColumn(c, format="%.1f%%", min_value=0.0, max_value=1.0)
-                for c in pct_cols
-            },
+            # ProgressColumn fills the bar over [min,max] and "percent" renders the value
+            # ×100 with a % sign — so a 0.99 reach-probability shows as "99.00%", not "1.0%".
+            c: st.column_config.ProgressColumn(c, format="percent", min_value=0.0, max_value=1.0)
+            for c in pct_cols
         },
         height=460,
     )
