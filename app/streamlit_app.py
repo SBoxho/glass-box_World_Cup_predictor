@@ -41,17 +41,29 @@ def load_artifact():
     return model.load_model()
 
 
+def _load_rankings_safe():
+    """Best-effort FIFA ranking load: committed parquet, else the public feed + 2026 snapshot.
+
+    The ranking is an *optional* enrichment (the model still runs on Elo/form, with
+    ``fifa_points_diff`` falling back to its neutral default). So any failure here — a feed outage,
+    or a stale ``core.config`` served by Streamlit Cloud's hot-reload after a deploy — degrades to
+    Elo-only rather than crashing the whole app with a redacted error. Returns ``None`` on failure.
+    """
+    try:
+        if config.RANKINGS_PATH.exists():
+            return pd.read_parquet(config.RANKINGS_PATH)
+        return ranking.load_rankings()
+    except Exception:  # optional enrichment — never let it take the whole app down
+        return None
+
+
 @st.cache_resource(show_spinner="Loading match history & computing current team strength …")
 def load_state():
     if config.MATCHES_PATH.exists():
         matches = pd.read_parquet(config.MATCHES_PATH)
     else:  # deployed: processed data is not committed — build it from the public source
         matches = ingest.get_clean_matches()
-    if config.RANKINGS_PATH.exists():
-        rankings = pd.read_parquet(config.RANKINGS_PATH)
-    else:  # deployed: rebuild from the public ranking feed + committed 2026 snapshot
-        rankings = ranking.load_rankings()
-    return matches, build_inference_state(matches, rankings)
+    return matches, build_inference_state(matches, _load_rankings_safe())
 
 
 @st.cache_resource(show_spinner=False)
