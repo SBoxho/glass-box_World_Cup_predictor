@@ -18,7 +18,7 @@ import streamlit as st
 # Make `core` importable when Streamlit runs this file directly.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core import config, explain, ingest, model, simulate  # noqa: E402
+from core import config, explain, ingest, live, model, simulate  # noqa: E402
 from core.features import build_inference_state  # noqa: E402
 from core.model import predict_from_features  # noqa: E402
 
@@ -70,6 +70,14 @@ def load_metrics():
 @st.cache_resource(show_spinner="Preparing matchup probabilities …")
 def get_simulator(_predictor, _wc, key: str):
     return simulate.TournamentSimulator(_predictor, _wc)
+
+
+@st.cache_data(ttl=600, show_spinner="Fetching live World Cup results …")
+def fetch_live(nonce: int):
+    """Pull played group results from the live feed. ``nonce`` is the cache key — the Refresh
+    button bumps it to force a real fetch; otherwise the last result is reused for 10 minutes.
+    Network calls only happen when this is called (the app never auto-fetches on load)."""
+    return live.fetch_live_results()
 
 
 # --------------------------------------------------------------------------------------
@@ -190,6 +198,57 @@ def tab_predictor(predictor, artifact, explainer, wc, state):
         )
 
 
+def _effective_results(wc: dict, snapshot: dict | None):
+    """Merge committed + live ``known_results``; return (wc_eff, locked, fetched_at, source).
+
+    A live snapshot (from the Refresh button) takes precedence; otherwise any results committed in
+    wc2026.json are used; otherwise the simulator runs from a blank pre-tournament state.
+    """
+    committed = wc.get("known_results", [])
+    live_results = snapshot.get("known_results", []) if snapshot else []
+    if live_results:
+        wc_eff = live.merge_known_results(wc, live_results)
+        return wc_eff, wc_eff["known_results"], snapshot.get("fetched_at"), snapshot.get("source")
+    if committed:
+        return wc, committed, wc.get("known_results_as_of"), "data/wc2026.json (committed)"
+    return wc, [], None, None
+
+
+def _render_live_status(snapshot, locked, fetched_at, source) -> None:
+    """Show the 'as of' line + a locked-results expander, or an honest fallback message."""
+    if snapshot is not None and snapshot.get("error") and not locked:
+        st.warning(
+            "Couldn't fetch live results (offline or source unavailable). "
+            "Simulating from the pre-tournament state."
+        )
+        return
+    if not locked:
+        if snapshot is not None:
+            st.info(
+                "Live feed reached, but no played group matches were found yet. "
+                "Simulating from the pre-tournament state."
+            )
+        else:
+            st.caption(
+                "No live results loaded — simulating from the pre-tournament state. "
+                "Click **🔄 Refresh live results** to pull current standings."
+            )
+        return
+    st.caption(
+        f"📡 **{len(locked)}** group match(es) locked · as of {fetched_at} · source: {source}"
+    )
+    with st.expander(f"Locked group results ({len(locked)})", expanded=False):
+        rows = [
+            {
+                "Home": r["home"],
+                "Score": f"{r['home_score']}–{r['away_score']}",
+                "Away": r["away"],
+            }
+            for r in locked
+        ]
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+
 def tab_simulator(predictor, artifact, wc):
     st.subheader("Tournament Simulator")
     st.caption(
@@ -197,6 +256,23 @@ def tab_simulator(predictor, artifact, wc):
         "Round of 32 → Final. Each match is sampled from the model's calibrated probabilities."
     )
 
+    # --- Live results: lock already-played group matches so the sim runs forward ---------------
+    lc1, lc2 = st.columns([1, 3])
+    with lc1:
+        if st.button(
+            "🔄 Refresh live results",
+            width="stretch",
+            help="Fetch played group matches from the openfootball feed (CC0) and lock them in.",
+        ):
+            st.session_state["live_nonce"] = st.session_state.get("live_nonce", 0) + 1
+            st.session_state["live_snapshot"] = fetch_live(st.session_state["live_nonce"])
+            st.session_state.pop("sim_result", None)  # standings changed → old run is stale
+    snapshot = st.session_state.get("live_snapshot")
+    wc_eff, locked, fetched_at, source = _effective_results(wc, snapshot)
+    with lc2:
+        _render_live_status(snapshot, locked, fetched_at, source)
+
+    # --- Simulation controls -------------------------------------------------------------------
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
         n_sims = st.select_slider("Simulations", options=[2000, 5000, 10000, 20000], value=10000)
@@ -207,7 +283,7 @@ def tab_simulator(predictor, artifact, wc):
         st.write("")
         run = st.button("Run simulation", type="primary", width="stretch")
 
-    sim = get_simulator(predictor, wc, artifact.trained_through)
+    sim = get_simulator(predictor, wc_eff, f"{artifact.trained_through}|{len(locked)}|{fetched_at}")
 
     if run:
         with st.spinner(f"Simulating {n_sims:,} tournaments …"):

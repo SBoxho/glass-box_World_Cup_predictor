@@ -21,6 +21,22 @@ download steps — **no raw third-party dumps are committed** to the repository.
 - **Stored in:** [`data/wc2026.json`](data/wc2026.json) — the 12 groups, host assignments
   (USA / Mexico / Canada), and the Round-of-32 bracket template (committed; small, factual).
 
+### Live 2026 results
+- **Source:** [`openfootball/worldcup.json`](https://github.com/openfootball/worldcup.json) —
+  community-maintained match data for the 2026 World Cup
+  (`2026/worldcup.json`: `team1, team2, score.ft, group, round, date`).
+- **Access:** fetched on demand from the public GitHub raw mirror by
+  [`core/live.py`](core/live.py); cached under `data/raw/` (gitignored). **No API key required.**
+  The fetch is optional — the app works fully offline, simulating from the pre-tournament state if
+  no results are loaded.
+- **License:** released into the **public domain (CC0)** by the maintainers.
+- **Use here:** the played *group-stage* results are run through `config.normalize_team` and locked
+  into the simulator's `known_results` block so the Tournament Simulator runs forward from the
+  current standings (knockout matches are re-simulated, not locked). Populate the committed file
+  with `python scripts/update_results.py --write`, or refresh on demand via the app.
+- **Caveat:** scores reflect upstream community freshness and may lag or contain placeholder data —
+  verify against official results before trusting a committed snapshot. No raw dump is committed.
+
 ---
 
 ## Planned enhancement (not yet integrated)

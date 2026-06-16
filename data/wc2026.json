@@ -46,6 +46,7 @@
     ["R_F", "R_H"]
   ],
 
-  "_comment_known_results": "Optional: lock in already-played group matches so the simulator runs forward from the live state. Each entry: {\"home\": str, \"away\": str, \"home_score\": int, \"away_score\": int}. Team names are normalized on load. Empty by default — populate from official results to re-simulate mid-tournament.",
+  "_comment_known_results": "Optional: lock in already-played group matches so the simulator runs forward from the live state. Each entry: {\"home\": str, \"away\": str, \"home_score\": int, \"away_score\": int}. Team names are normalized on load. Empty by default (no unverified scores committed). Populate from the live openfootball feed via `python scripts/update_results.py --write`, or refresh on demand in the app. `known_results_as_of` is the ISO-8601 fetch timestamp (null until populated). Only group-stage results are locked; knockout matches are re-simulated.",
+  "known_results_as_of": null,
   "known_results": []
 }
