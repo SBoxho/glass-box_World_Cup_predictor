@@ -18,7 +18,7 @@ import streamlit as st
 # Make `core` importable when Streamlit runs this file directly.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core import config, explain, ingest, live, model, ranking, simulate  # noqa: E402
+from core import config, explain, ingest, live, model, ranking, simulate, squads  # noqa: E402
 from core.features import build_inference_state  # noqa: E402
 from core.model import predict_from_features  # noqa: E402
 
@@ -57,13 +57,39 @@ def _load_rankings_safe():
         return None
 
 
+def _load_squads_safe():
+    """Best-effort squad-strength table for inference: committed parquet, else the snapshot only.
+
+    Like :func:`_load_rankings_safe`, the squad signal is an *optional* enrichment — the model still
+    runs on Elo/form/ranking with the squad features falling back to their neutral default. So this
+    never downloads the heavy historical ratings at runtime: it uses the processed cache when present
+    (local dev) and otherwise the committed 2026 squads snapshot alone (enough for current-strength
+    predictions). Returns ``None`` on failure rather than taking the whole app down.
+    """
+    try:
+        if config.SQUAD_STRENGTH_PATH.exists():
+            return pd.read_parquet(config.SQUAD_STRENGTH_PATH)
+        return squads.load_squad_strength(history=False, snapshot=True)
+    except Exception:  # optional enrichment — never let it take the whole app down
+        return None
+
+
+@st.cache_data(show_spinner=False)
+def load_squad_rosters():
+    """The committed 26-man squads keyed by normalized nation, for the squad UI (best-effort)."""
+    try:
+        return squads.current_squads()
+    except Exception:
+        return {}
+
+
 @st.cache_resource(show_spinner="Loading match history & computing current team strength …")
 def load_state():
     if config.MATCHES_PATH.exists():
         matches = pd.read_parquet(config.MATCHES_PATH)
     else:  # deployed: processed data is not committed — build it from the public source
         matches = ingest.get_clean_matches()
-    return matches, build_inference_state(matches, _load_rankings_safe())
+    return matches, build_inference_state(matches, _load_rankings_safe(), _load_squads_safe())
 
 
 @st.cache_resource(show_spinner=False)
@@ -167,9 +193,110 @@ def shap_bar(ex: dict, top_n: int = 8) -> go.Figure:
 
 
 # --------------------------------------------------------------------------------------
+# Squad panel (EA FC 26 ratings — third-party estimates)
+# --------------------------------------------------------------------------------------
+_ATTR_KEYS = ["pace", "shooting", "passing", "dribbling", "defending", "physic"]
+_ATTR_LABELS = ["Pace", "Shooting", "Passing", "Dribbling", "Defending", "Physical"]
+
+
+def _mean(vals: list) -> float | None:
+    vals = [v for v in vals if v is not None]
+    return sum(vals) / len(vals) if vals else None
+
+
+def squad_metrics(roster: list[dict]) -> dict:
+    """Summarise a 26-man roster (sorted by OVR, desc) for the squad panel."""
+    ovrs = [p["fc26_ovr"] for p in roster]
+    best_xi = _mean(ovrs[:11])
+    depth = _mean(ovrs[11:26]) if len(ovrs) > 11 else best_xi
+    # Attribute averages over the best XI's outfield players (GKs carry blank outfield attributes).
+    attrs = {a: _mean([p.get(a) for p in roster[:11]]) for a in _ATTR_KEYS}
+    return {
+        "best_xi": best_xi,
+        "star3": _mean(ovrs[:3]),
+        "depth": depth,
+        "attrs": attrs,
+        "n": len(roster),
+    }
+
+
+def squad_radar(name_a: str, attrs_a: dict, name_b: str, attrs_b: dict) -> go.Figure:
+    """Radar comparing the two squads' best-XI attribute averages (pace/shooting/… )."""
+    fig = go.Figure()
+    for name, attrs, color in (
+        (name_a, attrs_a, CLASS_COLORS["home"]),
+        (name_b, attrs_b, CLASS_COLORS["away"]),
+    ):
+        vals = [attrs.get(k) or 0 for k in _ATTR_KEYS]
+        fig.add_trace(
+            go.Scatterpolar(
+                r=[*vals, vals[0]],
+                theta=[*_ATTR_LABELS, _ATTR_LABELS[0]],
+                fill="toself",
+                name=name,
+                line_color=color,
+                opacity=0.6,
+            )
+        )
+    fig.update_layout(
+        height=320,
+        margin=dict(l=30, r=30, t=30, b=30),
+        polar=dict(radialaxis=dict(range=[40, 92], showticklabels=True, tickfont=dict(size=9))),
+        legend=dict(orientation="h", yanchor="bottom", y=1.05, x=0),
+    )
+    return fig
+
+
+def _top_players_df(roster: list[dict], n: int = 8) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "Player": p["name"],
+                "Pos": p["position"],
+                "Club": p.get("club", ""),
+                "OVR": p["fc26_ovr"],
+            }
+            for p in roster[:n]
+        ]
+    )
+
+
+def render_squad_panel(team_a: str, team_b: str, rosters: dict) -> None:
+    """Render the EA FC 26 squad comparison: per-team strength + top players + an attribute radar."""
+    st.markdown("**Squads — EA Sports FC 26**")
+    ra, rb = rosters.get(team_a), rosters.get(team_b)
+    if not ra or not rb:
+        missing = team_a if not ra else team_b
+        st.caption(
+            f"Squad data unavailable for {missing} — the model falls back to a neutral default."
+        )
+        return
+
+    ma, mb = squad_metrics(ra), squad_metrics(rb)
+    cols = st.columns(2)
+    for col, team, m, roster in ((cols[0], team_a, ma, ra), (cols[1], team_b, mb, rb)):
+        with col:
+            st.markdown(f"**{team}**")
+            x1, x2, x3 = st.columns(3)
+            x1.metric("Best XI OVR", f"{m['best_xi']:.1f}")
+            x2.metric("Top-3 stars", f"{m['star3']:.1f}")
+            x3.metric("Depth (12–26)", f"{m['depth']:.1f}" if m["depth"] else "—")
+            st.dataframe(_top_players_df(roster), hide_index=True, width="stretch", height=180)
+            if m["n"] < config.SQUADS_PER_TEAM:
+                st.caption(f"Only {m['n']} rated players (EA under-represents this nation).")
+
+    st.plotly_chart(squad_radar(team_a, ma["attrs"], team_b, mb["attrs"]), width="stretch")
+    st.caption(
+        "EA Sports FC 26 in-game ratings — **third-party estimates, not official data**. Best-XI = "
+        "mean overall of the top 11; attributes averaged over the best XI. Fed to the model as "
+        "point-in-time squad features (see *Under the Hood* for the with-vs-without ablation)."
+    )
+
+
+# --------------------------------------------------------------------------------------
 # Tabs
 # --------------------------------------------------------------------------------------
-def tab_predictor(predictor, artifact, explainer, wc, state):
+def tab_predictor(predictor, artifact, explainer, wc, state, rosters):
     st.subheader("Match Predictor")
     st.caption(
         "Pick two teams and a venue. The model returns calibrated win / draw / loss "
@@ -219,6 +346,10 @@ def tab_predictor(predictor, artifact, explainer, wc, state):
             "Green pushes toward the favoured side; red pushes against. SHAP runs on the raw "
             "tree model — calibration only rescales the final probabilities, not these signs."
         )
+
+    if rosters:
+        st.divider()
+        render_squad_panel(team_a, team_b, rosters)
 
 
 def _effective_results(wc: dict, snapshot: dict | None):
@@ -409,6 +540,15 @@ def tab_under_the_hood(metrics, wc, artifact):
                     "ECE ↓": float("nan"),
                 }
             )
+        if "squad_only" in b:
+            rows.append(
+                {
+                    "Model": "Baseline: squad-only (EA FC)",
+                    "Log-loss ↓": b["squad_only"]["logloss"],
+                    "Accuracy ↑": b["squad_only"]["accuracy"],
+                    "ECE ↓": float("nan"),
+                }
+            )
         rows.append(
             {
                 "Model": "Baseline: always-home",
@@ -444,6 +584,51 @@ def tab_under_the_hood(metrics, wc, artifact):
                 f"because it moves the model — the honest takeaway is that Elo already captures it."
             )
 
+        ablation = metrics.get("ablation")
+        if ablation:
+            st.markdown(
+                "**Squad-strength ablation** — the model with vs without the EA FC squad features"
+            )
+            aw, ao = ablation["with_squad"], ablation["without_squad"]
+            ab_df = pd.DataFrame(
+                [
+                    {
+                        "Model": "With squad features",
+                        "Log-loss ↓": aw["logloss"],
+                        "Accuracy ↑": aw["accuracy"],
+                        "ECE ↓": aw["ece"],
+                    },
+                    {
+                        "Model": "Without squad features",
+                        "Log-loss ↓": ao["logloss"],
+                        "Accuracy ↑": ao["accuracy"],
+                        "ECE ↓": ao["ece"],
+                    },
+                ]
+            )
+            st.dataframe(
+                ab_df,
+                hide_index=True,
+                width="stretch",
+                column_config={
+                    "Log-loss ↓": st.column_config.NumberColumn(format="%.4f"),
+                    "Accuracy ↑": st.column_config.NumberColumn(format="%.3f"),
+                    "ECE ↓": st.column_config.NumberColumn(format="%.4f"),
+                },
+            )
+            rsq = (metrics.get("feature_notes") or {}).get("elo_squad_pearson")
+            rsq_txt = (
+                f" Squad strength is moderately collinear with Elo (r ≈ {rsq:.2f})." if rsq else ""
+            )
+            st.caption(
+                f"Honest result: adding the four EA FC squad features (squad strength, attack-vs-"
+                f"defence, depth, star power) changes the backtest by only **{ablation['delta_logloss']:+.4f}** "
+                f"log-loss and **{ablation['delta_accuracy']:+.3f}** accuracy — a tiny, expected lift."
+                f"{rsq_txt} The model still essentially ties the strong Elo-only baseline. In-game "
+                f"ratings are **third-party estimates**, included for explainability and transparency, "
+                f"not because they move the model."
+            )
+
     c1, c2 = st.columns(2)
     with c1:
         if config.RELIABILITY_PLOT_PATH.exists():
@@ -459,8 +644,10 @@ def tab_under_the_hood(metrics, wc, artifact):
   matches from 2002 onward; full history warms up Elo.
 - **Elo:** chess-style, K scaled by goal margin and tournament importance; home advantage in
   the expectation, zeroed at neutral venues.
-- **Features (point-in-time, no leakage):** Elo gap, recent form & goal difference,
-  decayed head-to-head, venue, host advantage, days of rest.
+- **Features (point-in-time, no leakage):** Elo gap, FIFA-ranking gap, recent form & goal
+  difference, decayed head-to-head, venue, host advantage, days of rest, and EA FC squad
+  strength (best-XI / attack-vs-defence / depth / star power — third-party in-game estimates,
+  attached from the ratings version current at each match date).
 - **Model:** multiclass XGBoost, isotonic-calibrated via cross-validation so the numbers are
   usable as real probabilities. Neutral-venue predictions are symmetrized.
 - **Simulation:** outcomes sampled from calibrated probabilities; scorelines from Poisson
@@ -490,6 +677,7 @@ def main():
     explainer = load_explainer(artifact)
     wc = load_wc()
     metrics = load_metrics()
+    rosters = load_squad_rosters()
     predictor = model.Predictor(artifact, state)
 
     st.caption(
@@ -499,7 +687,7 @@ def main():
 
     t1, t2, t3 = st.tabs(["🎯 Match Predictor", "🏆 Tournament Simulator", "🔬 Under the Hood"])
     with t1:
-        tab_predictor(predictor, artifact, explainer, wc, state)
+        tab_predictor(predictor, artifact, explainer, wc, state, rosters)
     with t2:
         tab_simulator(predictor, artifact, wc)
     with t3:
