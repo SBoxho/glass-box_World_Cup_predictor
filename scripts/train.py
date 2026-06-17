@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd  # noqa: E402
 
-from core import config, features, ingest, model, ranking  # noqa: E402
+from core import config, features, ingest, model, ranking, squads  # noqa: E402
 
 
 def _load_features() -> pd.DataFrame:
@@ -33,8 +33,12 @@ def _load_features() -> pd.DataFrame:
     print("features.parquet not found — building it from match history first ...")
     matches = ingest.get_clean_matches()
     rankings = ranking.load_rankings()
+    squad_strength = squads.load_squad_strength()
     return features.build_features(
-        matches, rankings=rankings, train_start_year=config.TRAIN_START_YEAR
+        matches,
+        rankings=rankings,
+        train_start_year=config.TRAIN_START_YEAR,
+        squads=squad_strength,
     )
 
 
@@ -98,10 +102,33 @@ def main() -> None:
         f"acc={m['baselines']['fifa_only']['accuracy']:.3f}"
     )
     print(
+        f"  {'baseline: squad-only':<26} logloss={m['baselines']['squad_only']['logloss']:.4f}  "
+        f"acc={m['baselines']['squad_only']['accuracy']:.3f}"
+    )
+    print(
         f"  {'baseline: always-home':<26} logloss={m['baselines']['always_home']['logloss']:.4f}  "
         f"acc={m['baselines']['always_home']['accuracy']:.3f}"
     )
-    print(f"\nElo <-> FIFA-points Pearson r: {m['feature_notes']['elo_fifa_pearson']:.3f}")
+
+    ab = m["ablation"]
+    print("\nSquad-feature ablation (same backtest model, with vs without the squad features):")
+    print(
+        f"  {'with squad':<14} logloss={ab['with_squad']['logloss']:.4f}  "
+        f"acc={ab['with_squad']['accuracy']:.3f}"
+    )
+    print(
+        f"  {'without squad':<14} logloss={ab['without_squad']['logloss']:.4f}  "
+        f"acc={ab['without_squad']['accuracy']:.3f}"
+    )
+    print(
+        f"  delta: logloss {ab['delta_logloss']:+.4f} (>0 = squad helps), "
+        f"accuracy {ab['delta_accuracy']:+.3f}"
+    )
+
+    fn = m["feature_notes"]
+    print(f"\nElo <-> FIFA-points Pearson r: {fn['elo_fifa_pearson']:.3f}")
+    if fn.get("elo_squad_pearson") is not None:
+        print(f"Elo <-> squad-strength Pearson r: {fn['elo_squad_pearson']:.3f}")
     print(
         f"\nSaved: {config.MODEL_PATH.name}, {config.METRICS_PATH.name}, "
         f"{config.RELIABILITY_PLOT_PATH.name}"

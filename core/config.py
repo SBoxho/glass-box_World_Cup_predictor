@@ -67,16 +67,28 @@ FIFA_RANKING_URL = (
 # no-leakage guardrail depends on that identity.
 FIFA_POINTS_BASE = 1000.0
 
-# Historical versioned EA Sports FC / FIFA player ratings (FIFA 15 → FC 24), used to build a
-# point-in-time per-nation squad-strength table. No auth required — a public Hugging Face mirror of
-# the community sofifa-derived "legacy" complete-player dataset (one row per player per FIFA
-# version, with nationality, overall, positions and the six attribute aggregates). Downloaded at
-# build time and cached under data/external/ (gitignored). The committed SQUADS_2026_PATH snapshot
-# is appended as the latest version so 2026 predictions use current squads. See DATA_SOURCES.md.
-# In-game ratings are THIRD-PARTY ESTIMATES, not official data.
+# Historical versioned EA Sports FC / FIFA player ratings (FIFA 15 → FIFA 23, ~one release/year),
+# used to build a point-in-time per-nation squad-strength table. No auth required — a public Hugging
+# Face mirror of the community sofifa-derived "legacy" complete-player dataset (one row per player
+# per FIFA version, with nationality, overall, positions and the six attribute aggregates).
+# Downloaded at build time and cached under data/external/ (gitignored). The committed
+# SQUADS_2026_PATH snapshot is appended as the latest version so 2026 predictions use current
+# squads. See DATA_SOURCES.md. In-game ratings are THIRD-PARTY ESTIMATES, not official data.
 SQUAD_RATINGS_URL = (
     "https://huggingface.co/datasets/jsulz/FIFA23/resolve/main/male_players%20%28legacy%29.csv"
 )
+
+# Current EA FC 26 player ratings used to (re)generate the committed 2026 squads snapshot via
+# scripts/build_squads_snapshot.py — same sofifa-derived legacy schema (fifa_version == 26). No auth
+# required (public GitHub mirror). The raw CSV is cached under data/external/ (gitignored); only the
+# small derived data/squads2026.json is committed.
+SQUADS_2026_SOURCE_URL = (
+    "https://raw.githubusercontent.com/ismailoksuz/EAFC26-DataHub/main/data/players.csv"
+)
+SQUADS_2026_RAW_CACHE_PATH = (
+    EXTERNAL_DIR / "fc26_players.csv"
+)  # downloaded FC26 ratings (gitignored)
+SQUADS_PER_TEAM = 26  # players kept per nation in the committed snapshot (top-N by overall)
 
 # Default squad overall for a nation absent from a ratings version (e.g. a minnow with too few
 # rated players, or any team before FIFA 15). A fixed constant — like FIFA_POINTS_BASE — so the

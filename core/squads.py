@@ -162,7 +162,11 @@ def load_current_snapshot(path: Path | None = None) -> pd.DataFrame:
 
 
 def load_squad_strength(
-    *, download: bool = True, history: bool = True, snapshot: bool = True
+    *,
+    download: bool = True,
+    force_download: bool = False,
+    history: bool = True,
+    snapshot: bool = True,
 ) -> pd.DataFrame:
     """Return the full squad-strength time series: history (+ current snapshot), tidy, date-sorted.
 
@@ -174,7 +178,7 @@ def load_squad_strength(
     frames = []
     if history:
         if download:
-            download_squad_ratings()
+            download_squad_ratings(force=force_download)
         frames.append(load_squad_history())
     if snapshot:
         snap = load_current_snapshot()
