@@ -28,6 +28,10 @@ The probabilities are genuinely usable as probabilities — expected calibration
 
 ## ✨ What it does
 
+- **Matchday Home** — the landing page. A live read on the tournament *right now*: a hero for the
+  match in progress (or a ticking countdown to the next one, with the model's prediction + top SHAP
+  drivers once kick-off is within 24 h), a "Today at the World Cup" strip, and cards into the tools
+  below. Kick-offs render in your local timezone; everything degrades gracefully offline.
 - **Match Predictor** — pick two teams + a venue, get calibrated win/draw/loss probabilities, a
   SHAP contribution chart, and an auto-generated plain-English read
   (*"The model leans England: + neutral venue, + scoring form; tempered by head-to-head record."*),
@@ -38,6 +42,13 @@ The probabilities are genuinely usable as probabilities — expected calibration
   lifting the trophy, plus the most-likely final. **Refresh live results** to lock already-played
   group matches (free CC0 [openfootball](https://github.com/openfootball/worldcup.json) feed, no
   API key) and re-simulate forward from the current standings; works offline if you skip it.
+- **Choose Your Team** — pick any of the 48 finalists and the page becomes a fan-facing team
+  view: title odds framed against the field favourite (so the spread stays visible), a
+  stage-by-stage run funnel, the group outlook (model advance odds + live standings), the next
+  match's prediction, the team's road traced on the bracket, and a plain-English *"what needs to
+  happen?"*. **Strengths & weaknesses** are the model's own inputs (Elo, form, FIFA points, squad
+  strength) ranked against the field — never invented tactical claims; a factor with no data (e.g.
+  EA FC squad strength on this build) reports *limited coverage* rather than a guessed number.
 - **Under the Hood** — global SHAP summary, the calibration curve, and an honest temporal
   backtest against baselines, with a methodology + limitations write-up.
 
@@ -56,12 +67,16 @@ glassbox-worldcup/
 │   ├── features.py            # POINT-IN-TIME feature engineering + fast inference state
 │   ├── model.py               # train / calibrate / persist / predict (+ neutral symmetry)
 │   ├── explain.py             # SHAP wrappers: global summary + per-match + narrative
-│   └── simulate.py            # Monte Carlo tournament (48-team / Round-of-32 format)
+│   ├── simulate.py            # Monte Carlo tournament (48-team / Round-of-32 format)
+│   ├── live.py                # live group results (openfootball CC0) -> simulator lock-in
+│   └── fixtures.py            # full 2026 schedule (kickoffs/venues/status) for Matchday Home
 ├── scripts/
 │   ├── build_dataset.py          # ingest -> features -> data/processed/
 │   ├── build_squads_snapshot.py  # EA FC 26 ratings -> data/squads2026.json (committed)
 │   └── train.py                  # features -> models/model.joblib + metrics + plots
-├── app/streamlit_app.py       # thin presentation layer — imports from core/
+├── app/
+│   ├── streamlit_app.py       # thin presentation layer + top-level nav — imports from core/
+│   └── components/            # presentation: Matchday Home, bracket, Choose Your Team page
 ├── api/main.py                # OPTIONAL FastAPI stub (decoupled-architecture demo, un-deployed)
 ├── data/wc2026.json           # the real Dec-2025 draw: 12 groups, hosts, R32 bracket (committed)
 ├── data/squads2026.json       # 48 WC squads from EA FC 26 (committed; third-party estimates)
@@ -148,8 +163,8 @@ is exact). **This is an educational / decision-support tool — probabilistic, n
 
 ## ✅ Guardrail tests
 
-Three properties that are easy to get subtly wrong are pinned with hermetic tests (synthetic data,
-no network, no committed artifacts needed):
+Properties that are easy to get subtly wrong are pinned with hermetic tests (synthetic data /
+hand-built payloads, no network, no committed artifacts needed):
 
 - **`test_features_no_leakage.py`** — features recomputed from a strictly-before-date history must
   exactly match the pipeline's output (and the strict-before boundary must actually bite).
@@ -158,9 +173,14 @@ no network, no committed artifacts needed):
 - **`test_simulate_format.py`** — 48 teams enter, exactly 32 reach the R32 (24 + 8 best thirds),
   the best-third ranking is correct, no team meets its own group in the R32, and there is exactly
   one champion.
+- **`test_live_results.py`** — live group results parse & normalize, degrade to cache offline, and
+  are honored by the simulator (locked matches change the standings).
+- **`test_fixtures.py`** — the schedule provider behind Matchday Home: kick-off times resolve to
+  UTC across timezone offsets, live/next/today selection is correct against a frozen clock, and the
+  fetch degrades to cache offline.
 
 ```bash
-pytest          # all three, plus aggregation checks
+pytest          # everything above, plus aggregation checks
 ```
 
 ---

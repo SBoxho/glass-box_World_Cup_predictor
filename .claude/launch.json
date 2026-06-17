@@ -17,6 +17,23 @@
         "false"
       ],
       "port": 8501
+    },
+    {
+      "name": "streamlit-preview",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "streamlit",
+        "run",
+        "app/streamlit_app.py",
+        "--server.port",
+        "8520",
+        "--server.headless",
+        "true",
+        "--browser.gatherUsageStats",
+        "false"
+      ],
+      "port": 8520
     }
   ]
 }

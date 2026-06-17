@@ -21,6 +21,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from core import bracket as bracket_mod
 from core.config import SEED
 
 # Round-robin pairing order for the 4 teams in a group (by their index 0..3).
@@ -54,6 +55,9 @@ class SimulationResult:
     most_likely_final: tuple[str, str]
     most_likely_final_prob: float
     n_sims: int
+    # Per-slot bracket projection (see :mod:`core.bracket`): for every knockout position, which
+    # teams are likely to fill it and who advances. ``None`` only if bracket tracking was disabled.
+    bracket: dict | None = None
 
 
 class TournamentSimulator:
@@ -249,11 +253,23 @@ class TournamentSimulator:
         counts = {s: np.zeros(n) for s in STAGES}
         final_pairs: dict[tuple, int] = {}
 
+        # Per-position occupancy: occ[round][slot, team] counts how many tournaments put each team in
+        # that bracket slot. ``reached[stage]`` is already in bracket order; the Round-of-32 *slot*
+        # order comes from the resolved template pairs (``_last_r32_pairs``). See :mod:`core.bracket`.
+        occ = {k: np.zeros((bracket_mod.PARTICIPANTS[k], n)) for k in bracket_mod.PARTICIPANTS}
+        ko_rows = {k: np.arange(bracket_mod.PARTICIPANTS[k]) for k in ["R16", "QF", "SF", "Final"]}
+        r32_rows = np.arange(32)
+
         for _ in range(n_sims):
             reached = self.simulate_once()
             for s in STAGES:
                 for t in reached[s]:
                     counts[s][self.idx[t]] += 1
+            flat32 = [t for pair in self._last_r32_pairs for t in pair]
+            occ["R32"][r32_rows, [self.idx[t] for t in flat32]] += 1
+            for s in ["R16", "QF", "SF", "Final"]:
+                occ[s][ko_rows[s], [self.idx[t] for t in reached[s]]] += 1
+            occ["Champion"][0, self.idx[reached["Champion"][0]]] += 1
             fp = self._last_final
             final_pairs[fp] = final_pairs.get(fp, 0) + 1
 
@@ -263,9 +279,11 @@ class TournamentSimulator:
         table = table.sort_values("Champion", ascending=False).reset_index(drop=True)
 
         best_final = max(final_pairs.items(), key=lambda kv: kv[1])
+        r32_tokens = [tok for pair in self.r32_template for tok in pair]
         return SimulationResult(
             table=table,
             most_likely_final=best_final[0],
             most_likely_final_prob=best_final[1] / n_sims,
             n_sims=n_sims,
+            bracket=bracket_mod.build_bracket(occ, self.teams, n_sims, r32_tokens),
         )

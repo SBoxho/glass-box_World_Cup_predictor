@@ -15,25 +15,39 @@ download steps — **no raw third-party dumps are committed** to the repository.
   a courtesy.
 - **Use here:** drives the rolling Elo ratings, all point-in-time features, and model training.
 
-### 2026 tournament structure
+### 2026 tournament structure & schedule
 - **Source:** the official FIFA World Cup 2026 final draw (held 5 December 2025, Washington DC),
-  cross-checked across multiple outlets (FIFA, ESPN, Al Jazeera, NBC Sports).
+  cross-checked across multiple outlets (FIFA, ESPN, Al Jazeera, NBC Sports). The full **match
+  schedule** (kick-off times, venues, knockout slots) is derived from the openfootball feed below.
 - **Stored in:** [`data/wc2026.json`](data/wc2026.json) — the 12 groups, host assignments
-  (USA / Mexico / Canada), and the Round-of-32 bracket template (committed; small, factual).
+  (USA / Mexico / Canada), the Round-of-32 bracket template, **and** a structure-only `fixtures[]`
+  schedule: each match's teams (or knockout slot placeholder like `2A` / `W74`), group/round, venue,
+  date, and kick-off resolved to an absolute UTC instant — **no scores**. Committed (small, factual)
+  so the Matchday Home page works fully offline; regenerate with
+  `python scripts/update_results.py --fixtures --write`.
 
 ### Live 2026 results
 - **Source:** [`openfootball/worldcup.json`](https://github.com/openfootball/worldcup.json) —
   community-maintained match data for the 2026 World Cup
-  (`2026/worldcup.json`: `team1, team2, score.ft, group, round, date`).
+  (`2026/worldcup.json`: `team1, team2, score.ft, group, round, date, time, ground`).
 - **Access:** fetched on demand from the public GitHub raw mirror by
-  [`core/live.py`](core/live.py); cached under `data/raw/` (gitignored). **No API key required.**
-  The fetch is optional — the app works fully offline, simulating from the pre-tournament state if
-  no results are loaded.
+  [`core/live.py`](core/live.py) (played results) and [`core/fixtures.py`](core/fixtures.py) (full
+  schedule); cached under `data/raw/` (gitignored). **No API key required.** The fetch is optional —
+  the app works fully offline, falling back to the last cached snapshot (or, for the simulator, the
+  pre-tournament state).
 - **License:** released into the **public domain (CC0)** by the maintainers.
 - **Use here:** the played *group-stage* results are run through `config.normalize_team` and locked
   into the simulator's `known_results` block so the Tournament Simulator runs forward from the
   current standings (knockout matches are re-simulated, not locked). Populate the committed file
   with `python scripts/update_results.py --write`, or refresh on demand via the app.
+  The **Matchday Home** page reads the committed `fixtures[]` schedule (above) through
+  [`core/fixtures.py`](core/fixtures.py) and **overlays** played results from this feed on top:
+  `resolve_fixtures` merges the committed `known_results` and the cached live snapshot onto the
+  schedule, classifies each match as `upcoming` / `live` / `finished` / `unknown` against the
+  current time, and surfaces the live or next match (with a kick-off countdown and a 24-hour-out
+  prediction), today's fixtures and recently-finished results. Because the schedule is committed,
+  the page always renders and can decide what to show **with no network** — the feed only refreshes
+  scores (via the page's Refresh button or `update_results.py`).
 - **Caveat:** scores reflect upstream community freshness and may lag or contain placeholder data —
   verify against official results before trusting a committed snapshot. No raw dump is committed.
 

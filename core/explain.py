@@ -20,6 +20,7 @@ from core.config import CLASS_TO_IDX, CLASSES, FEATURES
 # Human-readable labels for the model features (used in narratives and charts).
 FEATURE_LABELS = {
     "elo_diff": "Elo rating gap",
+    "fifa_points_diff": "FIFA ranking gap",
     "form_home": "home recent form",
     "form_away": "away recent form",
     "gd_home": "home scoring form",

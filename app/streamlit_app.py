@@ -2,7 +2,9 @@
 
 A thin presentation layer: all modelling lives in ``core``. The model is loaded once from the
 committed artifact (never retrained here); match history is downloaded/cached to build the live
-inference state. Three tabs: Match Predictor, Tournament Simulator, and Under the Hood.
+inference state. The app opens on a **Matchday Home** landing page (see ``components/home.py``);
+a top-level nav switches to the data-science views: Match Predictor, Tournament Simulator, and
+Under the Hood.
 """
 
 from __future__ import annotations
@@ -15,10 +17,27 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-# Make `core` importable when Streamlit runs this file directly.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# Make `core` (project root) and `components` (this file's dir) importable when Streamlit runs
+# this file directly.
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # app/ -> `components`
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # project root -> `core`
 
-from core import config, explain, ingest, live, model, ranking, simulate, squads  # noqa: E402
+from components import bracket as bracket_view  # noqa: E402  (presentation component)
+from components import home  # noqa: E402  (presentation component; imports from core)
+from components import team_page as team_page_view  # noqa: E402  (presentation component)
+
+from core import bracket as core_bracket  # noqa: E402
+from core import (  # noqa: E402
+    config,
+    explain,
+    fixtures,
+    ingest,
+    live,
+    model,
+    ranking,
+    simulate,
+    squads,
+)
 from core.features import build_inference_state  # noqa: E402
 from core.model import predict_from_features  # noqa: E402
 
@@ -120,6 +139,46 @@ def fetch_live(nonce: int):
     button bumps it to force a real fetch; otherwise the last result is reused for 10 minutes.
     Network calls only happen when this is called (the app never auto-fetches on load)."""
     return live.fetch_live_results()
+
+
+@st.cache_data(show_spinner=False)
+def resolve_schedule():
+    """The Matchday page's default, offline-safe schedule: the committed ``data/wc2026.json``
+    ``fixtures[]`` plus any cached live results merged on top. No network, so the page always loads
+    and can always decide what to show. The live feed is pulled only when the user hits Refresh."""
+    return fixtures.resolve_snapshot()
+
+
+@st.cache_data(show_spinner=False)
+def _played_pairs():
+    """Already-played ties (real team names) from the offline-resolved schedule, for the bracket.
+
+    Keyed by the unordered team pair so the bracket can stamp a final score on any knockout card
+    whose two most-likely teams have actually met. Group results never collide with knockout
+    pairings (they are always cross-group), so it is safe to build this from every finished fixture.
+    Offline and best-effort — a failure just means no card shows a played score.
+    """
+    try:
+        snap = fixtures.resolve_snapshot()
+    except Exception:
+        return {}
+    out: dict = {}
+    for f in snap.get("fixtures", []):
+        if f.get("finished") and f.get("team1_score") is not None:
+            out[frozenset((f["team1"], f["team2"]))] = {
+                "score": {f["team1"]: f["team1_score"], f["team2"]: f["team2_score"]}
+            }
+    return out
+
+
+@st.cache_data(ttl=600, show_spinner="Fetching the World Cup schedule …")
+def fetch_fixtures(nonce: int):
+    """Pull the full live 2026 schedule (kickoffs, venues, scores) when the user hits Refresh.
+
+    Cached for 10 minutes (the Refresh button bumps ``nonce``). Degrades to the openfootball cache
+    (or an empty snapshot) offline; the caller falls back to the committed schedule if it comes back
+    empty, so the page always renders."""
+    return fixtures.fetch_fixtures()
 
 
 # --------------------------------------------------------------------------------------
@@ -454,24 +513,106 @@ def tab_simulator(predictor, artifact, wc):
         f"({result.most_likely_final_prob:.1%} of {result.n_sims:,} simulations)"
     )
 
-    table = result.table.copy()
-    pct_cols = simulate.STAGES
-    st.markdown("**Title odds & run probabilities**")
-    st.dataframe(
-        table.rename(columns={"team": "Team", "group": "Grp"}),
-        width="stretch",
-        hide_index=True,
-        column_config={
-            # ProgressColumn fills the bar over [min,max] and "percent" renders the value
-            # ×100 with a % sign — so a 0.99 reach-probability shows as "99.00%", not "1.0%".
-            c: st.column_config.ProgressColumn(c, format="percent", min_value=0.0, max_value=1.0)
-            for c in pct_cols
-        },
-        height=460,
+    # --- Knockout bracket: the visual, story-led view of the same simulation ---------------------
+    ratings = getattr(predictor.state, "ratings", None)
+    highlights = core_bracket.derive_highlights(result, ratings)
+
+    st.markdown("### 🗺️ Road to the Final")
+    st.caption(
+        "Each card is a projected knockout tie from the Monte-Carlo runs: the teams most likely to "
+        "fill each slot (with their chance to get there), and the simulated winner split. The four "
+        "highlights below trace stories through the bracket."
+    )
+    bracket_view.render_highlights(highlights)
+
+    teams_sorted = result.table["team"].tolist()
+    csel, cleg = st.columns([1, 2])
+    with csel:
+        sel = st.selectbox("Trace a team's path", ["— none —", *teams_sorted], key="bracket_team")
+    selected_team = None if sel.startswith("—") else sel
+    with cleg:
+        st.write("")
+        bracket_view.render_legend(selected_team)
+
+    st.caption("↔ Scroll horizontally to follow the rounds. Percentages come from the same runs.")
+    bracket_view.render_bracket(
+        result,
+        ratings,
+        selected_team=selected_team,
+        played=_played_pairs(),
+        highlights=highlights,
     )
 
-    st.markdown("**How far each team goes** (top 16 by title probability)")
-    st.plotly_chart(stage_heatmap(table.head(16)), width="stretch")
+    # --- The original table + heatmap, kept available as a data-grounded backstop ----------------
+    with st.expander("📋 Raw probabilities — full table & heatmap", expanded=False):
+        table = result.table.copy()
+        pct_cols = simulate.STAGES
+        st.markdown("**Title odds & run probabilities**")
+        st.dataframe(
+            table.rename(columns={"team": "Team", "group": "Grp"}),
+            width="stretch",
+            hide_index=True,
+            column_config={
+                # ProgressColumn fills the bar over [min,max] and "percent" renders the value
+                # ×100 with a % sign — so a 0.99 reach-probability shows as "99.00%", not "1.0%".
+                c: st.column_config.ProgressColumn(
+                    c, format="percent", min_value=0.0, max_value=1.0
+                )
+                for c in pct_cols
+            },
+            height=460,
+        )
+        st.markdown("**How far each team goes** (top 16 by title probability)")
+        st.plotly_chart(stage_heatmap(table.head(16)), width="stretch")
+
+
+def _team_sim_result(sim, key: str, n_sims: int, seed: int):
+    """Cache a default simulation for the team page in session state (keyed by standings + config).
+
+    The team page needs a :class:`SimulationResult` to slice. If the user has already run the
+    Tournament Simulator we reuse that run (see ``tab_my_team``); otherwise we auto-run a default
+    once and reuse it across team switches and reruns, so picking a team feels instant. The key
+    folds in the locked-results count + fetch time, so a live refresh invalidates it.
+    """
+    cache = st.session_state.setdefault("_team_sim_cache", {})
+    ck = (key, n_sims, seed)
+    if ck not in cache:
+        with st.spinner(f"Simulating {n_sims:,} tournaments for your team page …"):
+            cache[ck] = sim.run(n_sims=n_sims, seed=seed)
+    return cache[ck]
+
+
+def tab_my_team(predictor, artifact, explainer, wc, state):
+    """Choose-Your-Team route: resolve standings + a simulation, then hand off to the component.
+
+    Reuses the same live-results merge and cached simulator as the Tournament Simulator, so the
+    team page reflects current standings. Prefers an existing full run if the user already
+    simulated; otherwise auto-runs a default once (cached).
+    """
+    snapshot = st.session_state.get("live_snapshot")
+    wc_eff, locked, fetched_at, source = _effective_results(wc, snapshot)
+    key = f"{artifact.trained_through}|{len(locked)}|{fetched_at}"
+    sim = get_simulator(predictor, wc_eff, key)
+    result = st.session_state.get("sim_result")
+    if result is None:
+        result = _team_sim_result(sim, key, 10000, int(config.SEED))
+
+    schedule = resolve_schedule()
+    tz, _ = home.resolve_timezone()
+    team_page_view.render_team_page(
+        predictor,
+        artifact,
+        explainer,
+        wc,
+        state,
+        result,
+        fixtures_list=(schedule or {}).get("fixtures") or [],
+        played=_played_pairs(),
+        tz=tz,
+        known_results=locked,
+        source=source,
+        fetched_at=fetched_at,
+    )
 
 
 def stage_heatmap(table: pd.DataFrame) -> go.Figure:
@@ -666,12 +807,6 @@ tool — probabilistic, not betting advice.**
 # Main
 # --------------------------------------------------------------------------------------
 def main():
-    st.title("⚽ Glass-Box World Cup 2026 Predictor")
-    st.markdown(
-        "*Calibrated match predictions you can **see inside** — every probability comes with "
-        "its SHAP explanation, then a Monte Carlo simulation rolls them up to title odds.*"
-    )
-
     artifact = load_artifact()
     matches, state = load_state()
     explainer = load_explainer(artifact)
@@ -680,18 +815,44 @@ def main():
     rosters = load_squad_rosters()
     predictor = model.Predictor(artifact, state)
 
-    st.caption(
-        f"Model trained through **{artifact.trained_through}** · "
-        f"match history to **{state.as_of.date()}** · {len(state.teams)} national teams."
-    )
+    # Slim brand line + top-level navigation. Matchday Home is the default landing view, so the
+    # app opens on "what's happening now" rather than on the model dashboard.
+    st.markdown("##### ⚽ Glass-Box World Cup 2026 Predictor")
+    st.session_state.setdefault(home.NAV_KEY, home.VIEW_MATCHDAY)
+    views = [
+        home.VIEW_MATCHDAY,
+        home.VIEW_PREDICT,
+        home.VIEW_SIMULATE,
+        home.VIEW_TEAM,
+        home.VIEW_BRACKET,
+    ]
+    nav = st.segmented_control("Navigation", views, key=home.NAV_KEY, label_visibility="collapsed")
+    view = nav or home.VIEW_MATCHDAY  # single-select can be cleared to None → fall back to Home
 
-    t1, t2, t3 = st.tabs(["🎯 Match Predictor", "🏆 Tournament Simulator", "🔬 Under the Hood"])
-    with t1:
-        tab_predictor(predictor, artifact, explainer, wc, state, rosters)
-    with t2:
-        tab_simulator(predictor, artifact, wc)
-    with t3:
-        tab_under_the_hood(metrics, wc, artifact)
+    if view == home.VIEW_MATCHDAY:
+        # Default: the committed schedule + cached results (offline-safe). Only once the user has
+        # pressed Refresh do we pull the live feed — falling back to the committed schedule if the
+        # feed is unreachable, so the page never loses its floor.
+        nonce = st.session_state.get("fixtures_nonce", 0)
+        snapshot = resolve_schedule()
+        if nonce > 0:
+            live_snapshot = fetch_fixtures(nonce)
+            if live_snapshot.get("fixtures"):
+                snapshot = live_snapshot
+        home.render_home(predictor, artifact, explainer, wc, state, snapshot)
+    else:
+        st.caption(
+            f"Model trained through **{artifact.trained_through}** · "
+            f"match history to **{state.as_of.date()}** · {len(state.teams)} national teams."
+        )
+        if view == home.VIEW_PREDICT:
+            tab_predictor(predictor, artifact, explainer, wc, state, rosters)
+        elif view == home.VIEW_SIMULATE:
+            tab_simulator(predictor, artifact, wc)
+        elif view == home.VIEW_TEAM:
+            tab_my_team(predictor, artifact, explainer, wc, state)
+        else:
+            tab_under_the_hood(metrics, wc, artifact)
 
     st.divider()
     st.caption(
