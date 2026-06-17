@@ -61,25 +61,55 @@ download steps — **no raw third-party dumps are committed** to the repository.
   the training set) — the feature adds little independent signal; this is reported honestly in the
   app's "Under the Hood" tab (the FIFA-only baseline is in fact slightly weaker than Elo-only).
 
+### EA Sports FC / FIFA squad strength (Phase 3)
+A per-roster strength signal that Elo structurally misses, built from **versioned** in-game player
+ratings and attached **point-in-time** (a match dated `D` uses only the ratings *version* released
+on/before `D` — leak-free, see `core.squads.strength_as_of`). Four model features (home − away):
+`squad_strength_diff` (best-XI mean overall), `attack_vs_def` (attack-line vs defence-line matchup),
+`depth_diff` (players 12–26), `star_power_diff` (top-3). Two tiers, mirroring the FIFA ranking:
+
+- **History source (versioned, FIFA 15 → FIFA 23):**
+  [`jsulz/FIFA23`](https://huggingface.co/datasets/jsulz/FIFA23) on Hugging Face — a public mirror of
+  the community **sofifa-derived "legacy" complete-player dataset** (`male_players (legacy).csv`:
+  one row per player per FIFA version, with `fifa_version`, `fifa_update_date`, `nationality_name`,
+  `overall`, `player_positions`, `pace/shooting/passing/dribbling/defending/physic`). Originally
+  compiled by [stefanoleone992](https://www.kaggle.com/datasets/stefanoleone992/ea-sports-fc-24-complete-player-dataset)
+  from the publicly scrapable sofifa.com.
+  - **Access:** downloaded at build time by [`core/squads.py`](core/squads.py); cached under
+    `data/external/` (gitignored). **No API key required. Not committed as a raw dump.**
+- **Current snapshot (committed):** [`data/squads2026.json`](data/squads2026.json) — the 48 WC-2026
+  squads (top-26 by overall per nation, with the per-attribute fields the UI shows), derived from
+  the public **EA FC 26** ratings
+  ([`ismailoksuz/EAFC26-DataHub`](https://github.com/ismailoksuz/EAFC26-DataHub), same sofifa-derived
+  legacy schema, `fifa_version == 26`) by
+  [`scripts/build_squads_snapshot.py`](scripts/build_squads_snapshot.py). Appended as the latest
+  version so 2026 predictions use current squads. Small, factual, committed.
+- **License:** the underlying ratings are EA SPORTS FC in-game data; the datasets are community
+  compilations of the publicly scrapable sofifa.com, used here for **educational / non-commercial**
+  purposes with attribution. Only small derived artifacts are committed.
+- **⚠️ In-game ratings are THIRD-PARTY ESTIMATES, not official data** — stated in the UI (near the
+  squad panel and the ablation) and here.
+- **Use here:** the four squad features + a **squad-only** baseline and a **with-vs-without-squad
+  ablation** in [`core/model.py`](core/model.py); the squad panel + radar in the Match Predictor.
+- **Caveats / coverage gaps:** (1) The free history runs FIFA 15 (Sep 2014) → FIFA 23 (Sep 2022),
+  one snapshot per version at its launch roster; matches before Sep 2014 and the 2023→2026 gap fall
+  back to the nearest available version (FIFA 23, then the FC 26 snapshot). On the training set the
+  squad feature is non-zero on ~31% of rows (the modern, rated portion). (2) EA under-represents
+  smaller nations — a few WC-2026 sides have <26 (down to 3) rated players, so their depth/line
+  metrics are noisier; nations absent from a version fall back to a fixed `SQUAD_OVR_BASE` (0 diff).
+  (3) Squad strength is **moderately collinear with Elo** (Pearson r ≈ 0.53 on the training set) —
+  the with-vs-without ablation shows only a **tiny lift** (≈ +0.0014 log-loss, +0.4pp accuracy) and
+  the model still essentially ties the Elo-only baseline. Reported honestly in "Under the Hood".
+
 ---
 
 ## Planned enhancement (not yet integrated)
 
-The roadmap includes a **current-squad strength** signal — a per-roster feature that Elo
-structurally misses — plus a player-level explainability layer. These rely on proprietary /
-ToS-restricted datasets, so when integrated they will be loaded via a documented download step and
-**never committed** as raw dumps:
-
-- **EA FC 26 player ratings** (community datasets) — global 0–99 overall ratings, comparable across
-  leagues. In-game ratings are **third-party estimates, not official data**.
-- **Squad market value** (Transfermarkt-derived datasets) — a strong real-world strength proxy
-  with a historical time series. Use existing datasets only; **do not scrape live** (ToS).
-- **Historical versioned ratings** (FIFA 15 → FC 26) — required to build a *time-consistent*
-  per-year nation strength index (no leakage: a match uses only the rating version dated on/before it).
-
-When this module lands, each source will be cited and linked here with its specific licensing note,
-and an ablation table (model with vs without squad features) will be reported transparently in the
-app's "Under the Hood" tab.
+- **Squad market value** (Transfermarkt-derived datasets) — a strong real-world strength proxy with
+  a historical time series, complementary to in-game ratings. Use existing datasets only; **do not
+  scrape live** (ToS). When integrated it will be loaded via a documented download step and **never
+  committed** as a raw dump, with its specific licensing note added here.
+- **Player-level explainability** — surfacing which players drive a nation's squad-strength feature.
 
 ---
 

@@ -30,7 +30,9 @@ The probabilities are genuinely usable as probabilities — expected calibration
 
 - **Match Predictor** — pick two teams + a venue, get calibrated win/draw/loss probabilities, a
   SHAP contribution chart, and an auto-generated plain-English read
-  (*"The model leans England: + neutral venue, + scoring form; tempered by head-to-head record."*).
+  (*"The model leans England: + neutral venue, + scoring form; tempered by head-to-head record."*),
+  plus an **EA FC 26 squad panel** (best XI, star power, depth, and a pace/shooting/passing/defending
+  radar — third-party in-game estimates).
 - **Tournament Simulator** — Monte Carlo over the full 48-team bracket (12 groups → top 2 + 8
   best thirds → Round of 32 → Final) to each team's probability of reaching every stage and
   lifting the trophy, plus the most-likely final. **Refresh live results** to lock already-played
@@ -49,18 +51,22 @@ glassbox-worldcup/
 │   ├── config.py              # paths, constants, the canonical feature list, team-name aliases
 │   ├── ingest.py              # download + clean results.csv; load/validate the 2026 draw
 │   ├── elo.py                 # rolling Elo from full match history (date-batched, leak-free)
+│   ├── ranking.py             # FIFA-ranking time series + point-in-time points_as_of
+│   ├── squads.py              # EA FC squad-strength time series + point-in-time strength_as_of
 │   ├── features.py            # POINT-IN-TIME feature engineering + fast inference state
 │   ├── model.py               # train / calibrate / persist / predict (+ neutral symmetry)
 │   ├── explain.py             # SHAP wrappers: global summary + per-match + narrative
 │   └── simulate.py            # Monte Carlo tournament (48-team / Round-of-32 format)
 ├── scripts/
-│   ├── build_dataset.py       # ingest -> features -> data/processed/
-│   └── train.py               # features -> models/model.joblib + metrics + plots
+│   ├── build_dataset.py          # ingest -> features -> data/processed/
+│   ├── build_squads_snapshot.py  # EA FC 26 ratings -> data/squads2026.json (committed)
+│   └── train.py                  # features -> models/model.joblib + metrics + plots
 ├── app/streamlit_app.py       # thin presentation layer — imports from core/
 ├── api/main.py                # OPTIONAL FastAPI stub (decoupled-architecture demo, un-deployed)
 ├── data/wc2026.json           # the real Dec-2025 draw: 12 groups, hosts, R32 bracket (committed)
+├── data/squads2026.json       # 48 WC squads from EA FC 26 (committed; third-party estimates)
 ├── models/model.joblib        # trained + calibrated artifact (committed, ~2 MB)
-└── tests/                     # the three guardrail tests (below)
+└── tests/                     # the guardrail tests (below)
 ```
 
 **The architectural rule:** `app/` and `api/` may import from `core/`, **never the reverse**.
@@ -80,8 +86,9 @@ signal of production-quality structure here.
    margin and tournament importance (friendly < qualifier < World Cup), and home advantage lives
    in the *expectation* and is zeroed at neutral venues.
 3. **Point-in-time features (no leakage)** — Elo gap, FIFA-ranking points gap, recent form & goal
-   difference, decayed head-to-head, venue, host advantage, days of rest — each computed using
-   **only matches (and ranking snapshots) dated on/before** the match date.
+   difference, decayed head-to-head, venue, host advantage, days of rest, and **EA FC squad
+   strength** (best-XI / attack-vs-defence / depth / star power) — each computed using **only
+   matches, ranking snapshots, and rating versions dated on/before** the match date.
 4. **Calibrated XGBoost** — a multiclass {H, D, A} model, isotonic-calibrated via cross-validation
    so the outputs are real probabilities, not just argmax labels. Neutral-venue predictions are
    symmetrized so `predict(A, B)` mirrors `predict(B, A)`.
@@ -99,19 +106,21 @@ recent **3,357** completed internationals (2023-06-15 → 2026-06-14).
 
 | Model | Log-loss ↓ | Accuracy ↑ | ECE ↓ |
 | --- | --- | --- | --- |
-| **Calibrated XGBoost** | 0.8703 | 0.606 | **0.0081** |
+| **Calibrated XGBoost** (all features) | 0.8689 | 0.610 | **0.0097** |
 | Baseline: Elo-only (logistic) | **0.8647** | 0.606 | — |
-| Baseline: FIFA-ranking-only (logistic) | 0.9288 | 0.580 | — |
+| Baseline: FIFA-ranking-only (logistic) | 0.9289 | 0.580 | — |
+| Baseline: squad-only / EA FC (logistic) | 0.9355 | 0.561 | — |
 | Baseline: always-home | 1.0526 | 0.474 | — |
 
 **The honest takeaway:** in international football, Elo is a *very* strong baseline. The ML model
 essentially **matches** it on accuracy and log-loss — it does **not** meaningfully beat it (Elo-only
-in fact edges it slightly on log-loss). Adding the **FIFA-ranking points gap** changes nothing: it
-is strongly correlated with Elo (Pearson r ≈ 0.74), and on its own it is a *weaker* signal than Elo
-(FIFA-only log-loss 0.929 vs Elo's 0.865) — so it earns its place as an honest baseline, not a lift.
-What the model adds is excellent **calibration** (ECE ≈ 0.008 — the reliability curve hugs the
-diagonal), per-prediction **explainability**, and a tournament **simulation** layer. Reporting a
-small/null accuracy gain transparently is the point: a glass box tells you what it can and can't do.
+in fact edges it slightly on log-loss). The extra strength signals are honest about adding little:
+the **FIFA-ranking points gap** is strongly correlated with Elo (r ≈ 0.74) and weaker on its own,
+and the four **EA FC squad-strength features** (r ≈ 0.53 with Elo) move the backtest by only
+**≈ +0.0014 log-loss / +0.4pp accuracy** in a with-vs-without ablation — a tiny, expected lift. What
+the model adds is excellent **calibration** (ECE ≈ 0.01 — the reliability curve hugs the diagonal),
+per-prediction **explainability**, and a tournament **simulation** layer. Reporting a small/null
+accuracy gain transparently is the point: a glass box tells you what it can and can't do.
 
 ### Sanity check — simulated 2026 title odds
 
@@ -162,9 +171,10 @@ Requires Python 3.11+ (developed on 3.13).
 
 ```bash
 pip install -r requirements.txt
-python scripts/build_dataset.py     # download + clean history, engineer features (~30 s)
-python scripts/train.py             # train, calibrate, write models/ artifacts (~30 s)
-streamlit run app/streamlit_app.py  # launch the app
+python scripts/build_squads_snapshot.py  # (optional) regenerate data/squads2026.json from EA FC 26
+python scripts/build_dataset.py          # download history + ratings, engineer features (~30 s)
+python scripts/train.py                  # train, calibrate, write models/ artifacts (~30 s)
+streamlit run app/streamlit_app.py       # launch the app
 ```
 
 The repo ships with a trained `models/model.joblib`, so you can skip straight to
