@@ -26,7 +26,7 @@ from sklearn.metrics import accuracy_score, classification_report, log_loss
 from xgboost import XGBClassifier
 
 from core import config
-from core.config import CLASS_TO_IDX, CLASSES, FEATURES, SEED
+from core.config import CLASS_TO_IDX, CLASSES, FEATURES, SEED, SQUAD_FEATURES
 
 XGB_PARAMS = {
     "n_estimators": 350,
@@ -72,20 +72,24 @@ def _make_xgb() -> XGBClassifier:
 CALIB_FOLDS = 5
 
 
-def _fit_calibrated(df: pd.DataFrame) -> tuple[CalibratedClassifierCV, XGBClassifier]:
+def _fit_calibrated(
+    df: pd.DataFrame, cols: list[str] | None = None
+) -> tuple[CalibratedClassifierCV, XGBClassifier]:
     """Fit a cross-validated isotonic-calibrated XGBoost, plus a raw tree model for SHAP.
 
     Calibration uses ``CALIB_FOLDS``-fold internal CV (out-of-fold predictions feed the isotonic
     fit), which gives the calibrator far more data than a thin prefit slice would — important for
     a 3-class problem. The separately-fit raw XGBoost (trained on all of ``df``) is what
     :mod:`core.explain` runs SHAP on; calibration is a monotonic remap that does not change the
-    sign/ranking of feature contributions.
+    sign/ranking of feature contributions. ``cols`` defaults to :data:`FEATURES`; the ablation
+    passes a reduced column set.
     """
+    cols = cols or FEATURES
     y = _encode_y(df["result"])
     calibrated = CalibratedClassifierCV(_make_xgb(), method="isotonic", cv=CALIB_FOLDS)
-    calibrated.fit(df[FEATURES], y)
+    calibrated.fit(df[cols], y)
     raw = _make_xgb()
-    raw.fit(df[FEATURES], y)
+    raw.fit(df[cols], y)
     return calibrated, raw
 
 
@@ -143,6 +147,11 @@ def _baseline_fifa_only(train: pd.DataFrame, test: pd.DataFrame) -> dict:
     return _baseline_logreg(train, test, ["fifa_points_diff", "neutral"])
 
 
+def _baseline_squad_only(train: pd.DataFrame, test: pd.DataFrame) -> dict:
+    """Logistic regression on the squad-strength diffs + venue only — the squad 'single signal' bar."""
+    return _baseline_logreg(train, test, [*SQUAD_FEATURES, "neutral"])
+
+
 # --------------------------------------------------------------------------------------
 # Evaluation
 # --------------------------------------------------------------------------------------
@@ -167,10 +176,16 @@ def reliability_curve(y_true: np.ndarray, proba: np.ndarray, n_bins: int = 10) -
     return {"mean_pred": mean_pred, "obs_freq": obs_freq, "weight": weight, "ece": ece}
 
 
-def evaluate(model: CalibratedClassifierCV, test: pd.DataFrame) -> dict:
-    """Compute log-loss, accuracy, per-class P/R/F1, and the reliability curve on the test set."""
+def evaluate(
+    model: CalibratedClassifierCV, test: pd.DataFrame, cols: list[str] | None = None
+) -> dict:
+    """Compute log-loss, accuracy, per-class P/R/F1, and the reliability curve on the test set.
+
+    ``cols`` defaults to :data:`FEATURES`; the ablation evaluates a model fit on a reduced set.
+    """
+    cols = cols or FEATURES
     y = _encode_y(test["result"])
-    proba = model.predict_proba(test[FEATURES])
+    proba = model.predict_proba(test[cols])
     proba = proba[:, [list(model.classes_).index(i) for i in range(len(CLASSES))]]
     report = classification_report(
         y,
@@ -192,12 +207,27 @@ def evaluate(model: CalibratedClassifierCV, test: pd.DataFrame) -> dict:
 # --------------------------------------------------------------------------------------
 # Training entry point
 # --------------------------------------------------------------------------------------
+def _safe_corr(a: pd.Series, b: pd.Series) -> float | None:
+    """Pearson r, or ``None`` if undefined (a constant column → NaN, which isn't valid JSON)."""
+    r = a.corr(b)
+    return float(r) if pd.notna(r) else None
+
+
 def train_model(features_df: pd.DataFrame) -> ModelArtifact:
     """Run the temporal backtest and fit the production model; return a saveable artifact."""
     trainval, test = temporal_split(features_df)
 
     # 1) Honest backtest: this model (and its calibration folds) never see the test slice.
     backtest_model, _ = _fit_calibrated(trainval)
+    model_metrics = evaluate(backtest_model, test)
+
+    # 1b) Ablation: refit the same backtest on FEATURES minus the squad features and compare, so the
+    # squad-feature contribution is visible (expected to be small — squad strength ≈ collinear with
+    # Elo). The "with_squad" numbers are exactly the full backtest model above.
+    non_squad = [f for f in FEATURES if f not in SQUAD_FEATURES]
+    ablation_model, _ = _fit_calibrated(trainval, cols=non_squad)
+    without_squad = evaluate(ablation_model, test, cols=non_squad)
+
     metrics = {
         "split": {
             "trainval": [
@@ -211,17 +241,38 @@ def train_model(features_df: pd.DataFrame) -> ModelArtifact:
                 len(test),
             ],
         },
-        "model": evaluate(backtest_model, test),
+        "model": model_metrics,
         "baselines": {
             "always_home": _baseline_always_home(trainval, test),
             "elo_only": _baseline_elo_only(trainval, test),
             "fifa_only": _baseline_fifa_only(trainval, test),
+            "squad_only": _baseline_squad_only(trainval, test),
+        },
+        "ablation": {
+            "squad_features": SQUAD_FEATURES,
+            "with_squad": {
+                "logloss": model_metrics["logloss"],
+                "accuracy": model_metrics["accuracy"],
+                "ece": model_metrics["reliability"]["ece"],
+            },
+            "without_squad": {
+                "logloss": without_squad["logloss"],
+                "accuracy": without_squad["accuracy"],
+                "ece": without_squad["reliability"]["ece"],
+            },
+            # Positive delta_logloss / delta_accuracy ⇒ adding the squad features *helped*.
+            "delta_logloss": float(without_squad["logloss"] - model_metrics["logloss"]),
+            "delta_accuracy": float(model_metrics["accuracy"] - without_squad["accuracy"]),
         },
         "features": FEATURES,
         "feature_notes": {
-            # Elo and FIFA points measure overlapping things — report the collinearity honestly.
-            "elo_fifa_pearson": float(
-                features_df["elo_diff"].corr(features_df["fifa_points_diff"])
+            # Elo, FIFA points and squad strength measure overlapping things — report the
+            # collinearity honestly (this is why the squad lift is expected to be small/null).
+            "elo_fifa_pearson": _safe_corr(
+                features_df["elo_diff"], features_df["fifa_points_diff"]
+            ),
+            "elo_squad_pearson": _safe_corr(
+                features_df["elo_diff"], features_df["squad_strength_diff"]
             ),
         },
     }
@@ -273,6 +324,11 @@ def reverse_features(f: dict) -> dict:
         "is_host_home": f["is_host_home"],
         "days_rest_home": f["days_rest_away"],
         "days_rest_away": f["days_rest_home"],
+        # Squad diffs are all antisymmetric (home − away), so the mirror just flips the sign.
+        "squad_strength_diff": -f["squad_strength_diff"],
+        "attack_vs_def": -f["attack_vs_def"],
+        "depth_diff": -f["depth_diff"],
+        "star_power_diff": -f["star_power_diff"],
     }
 
 

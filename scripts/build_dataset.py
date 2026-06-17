@@ -19,7 +19,7 @@ from pathlib import Path
 # Allow running as a plain script (python scripts/build_dataset.py) without installing the pkg.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core import config, features, ingest, ranking  # noqa: E402
+from core import config, features, ingest, ranking, squads  # noqa: E402
 
 
 def main() -> None:
@@ -48,13 +48,27 @@ def main() -> None:
         f"-> {config.RANKINGS_PATH.relative_to(config.BASE_DIR)}"
     )
 
+    print("Downloading + building squad strength (EA FC history + 2026 snapshot) ...")
+    squad_strength = squads.load_squad_strength(force_download=args.force)
+    squad_strength.to_parquet(config.SQUAD_STRENGTH_PATH, index=False)
+    print(
+        f"  {len(squad_strength):,} squad rows over {squad_strength['date'].nunique()} versions "
+        f"({squad_strength['date'].min().date()} -> {squad_strength['date'].max().date()}) "
+        f"-> {config.SQUAD_STRENGTH_PATH.relative_to(config.BASE_DIR)}"
+    )
+
     print("Engineering point-in-time features ...")
     feats = features.build_features(
-        matches, rankings=rankings, train_start_year=config.TRAIN_START_YEAR
+        matches,
+        rankings=rankings,
+        train_start_year=config.TRAIN_START_YEAR,
+        squads=squad_strength,
     )
     feats.to_parquet(config.FEATURES_PATH, index=False)
     ranked = (feats["fifa_points_diff"] != 0.0).mean()
+    squad_cov = (feats["squad_strength_diff"] != 0.0).mean()
     print(f"  fifa_points_diff non-zero on {ranked:.0%} of training rows")
+    print(f"  squad_strength_diff non-zero on {squad_cov:.0%} of training rows")
     print(
         f"  {len(feats):,} training rows x {len(config.FEATURES)} features "
         f"(>= {config.TRAIN_START_YEAR}) -> {config.FEATURES_PATH.relative_to(config.BASE_DIR)}"

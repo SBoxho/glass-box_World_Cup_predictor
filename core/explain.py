@@ -29,6 +29,12 @@ FEATURE_LABELS = {
     "is_host_home": "host-nation advantage",
     "days_rest_home": "home days of rest",
     "days_rest_away": "away days of rest",
+    # Squad strength (EA FC ratings — third-party estimates). Generic (no "home"/"away" substring,
+    # like "Elo rating gap") so _team_label leaves them untouched.
+    "squad_strength_diff": "squad strength gap (EA FC)",
+    "attack_vs_def": "attack vs defence (EA FC)",
+    "depth_diff": "squad depth gap (EA FC)",
+    "star_power_diff": "star power gap (EA FC)",
 }
 
 
