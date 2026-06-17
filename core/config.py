@@ -26,9 +26,18 @@ FIFA_RANKING_CACHE_PATH = (
     RAW_DIR / "fifa_ranking_history.csv"
 )  # cached ranking history (gitignored)
 FIFA_RANKING_2026_PATH = DATA_DIR / "fifa_ranking_2026.json"  # committed current-ranking snapshot
+# Squad strength (Phase 3): raw versioned player ratings are downloaded to data/external/
+# (gitignored — never commit proprietary dumps); only the small committed 2026 snapshot lives in
+# data/. EXTERNAL_DIR is reserved for these third-party rating dumps.
+EXTERNAL_DIR = DATA_DIR / "external"
+SQUAD_RATINGS_CACHE_PATH = (
+    EXTERNAL_DIR / "fifa_players_legacy.csv"
+)  # downloaded history (gitignored)
+SQUADS_2026_PATH = DATA_DIR / "squads2026.json"  # committed current-squads snapshot
 MATCHES_PATH = PROCESSED_DIR / "matches.parquet"
 FEATURES_PATH = PROCESSED_DIR / "features.parquet"
 RANKINGS_PATH = PROCESSED_DIR / "rankings.parquet"
+SQUAD_STRENGTH_PATH = PROCESSED_DIR / "squad_strength.parquet"  # derived per-(nation,version) cache
 ELO_HISTORY_PATH = PROCESSED_DIR / "elo_history.parquet"
 
 MODEL_PATH = MODELS_DIR / "model.joblib"
@@ -57,6 +66,27 @@ FIFA_RANKING_URL = (
 # sides). A fixed constant so the batch and single-match feature paths agree exactly — the
 # no-leakage guardrail depends on that identity.
 FIFA_POINTS_BASE = 1000.0
+
+# Historical versioned EA Sports FC / FIFA player ratings (FIFA 15 → FC 24), used to build a
+# point-in-time per-nation squad-strength table. No auth required — a public Hugging Face mirror of
+# the community sofifa-derived "legacy" complete-player dataset (one row per player per FIFA
+# version, with nationality, overall, positions and the six attribute aggregates). Downloaded at
+# build time and cached under data/external/ (gitignored). The committed SQUADS_2026_PATH snapshot
+# is appended as the latest version so 2026 predictions use current squads. See DATA_SOURCES.md.
+# In-game ratings are THIRD-PARTY ESTIMATES, not official data.
+SQUAD_RATINGS_URL = (
+    "https://huggingface.co/datasets/jsulz/FIFA23/resolve/main/male_players%20%28legacy%29.csv"
+)
+
+# Default squad overall for a nation absent from a ratings version (e.g. a minnow with too few
+# rated players, or any team before FIFA 15). A fixed constant — like FIFA_POINTS_BASE — so the
+# batch and single-match feature paths produce identical squad diffs (the no-leakage test needs
+# that exact identity). Two unrated sides therefore give a 0 difference on every squad feature.
+SQUAD_OVR_BASE = 60.0
+
+# Minimum rated players a nation needs in a version to be aggregated (else it falls back to the
+# default). Keeps a handful of stray rows from inventing a "squad" for a barely-represented nation.
+SQUAD_MIN_PLAYERS = 16
 
 # --------------------------------------------------------------------------------------
 # Reproducibility
@@ -98,7 +128,18 @@ FEATURES = [
     "is_host_home",  # 1 if a 2026 host nation is playing in its own country
     "days_rest_home",  # days since each side's previous match (capped)
     "days_rest_away",
+    # Squad strength (Phase 3) — point-in-time EA FC / FIFA ratings, home − away. Each negates
+    # under a home/away swap (so reverse_features just flips the sign, like elo_diff). Third-party
+    # in-game-rating estimates, not official data. Appended last; everything is name-keyed.
+    "squad_strength_diff",  # home best-XI mean OVR − away best-XI mean OVR
+    "attack_vs_def",  # (home attack − away defence) − (away attack − home defence): line matchup
+    "depth_diff",  # home − away mean OVR of squad players ranked 12–26 (bench depth)
+    "star_power_diff",  # home − away mean OVR of the top-3 players
 ]
+
+# The Phase-3 squad subset (kept separate so model.py can build a squad-only baseline and the
+# with/without-squad ablation without re-listing the names).
+SQUAD_FEATURES = ["squad_strength_diff", "attack_vs_def", "depth_diff", "star_power_diff"]
 
 # --------------------------------------------------------------------------------------
 # Elo model (chess-style, eloratings.net-inspired weighting)

@@ -97,3 +97,39 @@ def make_synthetic_rankings(seed: int = 11) -> pd.DataFrame:
 @pytest.fixture(scope="session")
 def synthetic_rankings() -> pd.DataFrame:
     return make_synthetic_rankings(seed=11)
+
+
+def make_synthetic_squads(seed: int = 13) -> pd.DataFrame:
+    """Generate a time-indexed per-(team, date) squad-strength table for the synthetic teams.
+
+    Columns mirror :data:`core.squads.COLUMNS` (team, date, the five OVR components). Versions are
+    spaced ~200 days apart (sparser than the rankings, like ~yearly game releases) so they
+    interleave with matches and give the point-in-time as-of join real bite, and each team's level
+    drifts over time so the squad features are non-constant — exactly what the no-leakage test needs.
+    """
+    rng = np.random.default_rng(seed)
+    level = {t: 70.0 + 0.8 * i for i, t in enumerate(TEAMS)}  # distinct base level per team
+    dates = pd.date_range("2008-03-01", "2020-10-01", freq="200D")
+    rows = []
+    for d in dates:
+        for t in TEAMS:
+            lvl = level[t] + rng.normal(0, 1.5)
+            rows.append(
+                {
+                    "team": t,
+                    "date": d,
+                    "bestxi_ovr": round(lvl, 2),
+                    "attack_ovr": round(lvl + rng.normal(0, 1.0), 2),
+                    "def_ovr": round(lvl + rng.normal(0, 1.0), 2),
+                    "depth_ovr": round(lvl - 4.0 + rng.normal(0, 1.0), 2),
+                    "star3_ovr": round(lvl + 5.0 + rng.normal(0, 1.0), 2),
+                }
+            )
+    df = pd.DataFrame(rows)
+    df["date"] = pd.to_datetime(df["date"])
+    return df.sort_values("date", kind="mergesort").reset_index(drop=True)
+
+
+@pytest.fixture(scope="session")
+def synthetic_squads() -> pd.DataFrame:
+    return make_synthetic_squads(seed=13)

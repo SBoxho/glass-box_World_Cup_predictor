@@ -19,9 +19,10 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from core import config
+from core import config, squads
 from core.elo import compute_elo, ratings_as_of
 from core.ranking import points_as_of
+from core.squads import strength_as_of
 
 # Identifier columns carried alongside features for training / filtering / display.
 # (``neutral`` is intentionally not repeated here — it is already a model feature.)
@@ -98,6 +99,50 @@ def _attach_points_diff(matches: pd.DataFrame, rankings: pd.DataFrame | None) ->
     return (_side("home_team") - _side("away_team")).astype(float)
 
 
+def _attach_squad_diffs(matches: pd.DataFrame, squad_table: pd.DataFrame | None) -> pd.DataFrame:
+    """Vectorized point-in-time squad feature diffs for every match (the four SQUAD_FEATURES).
+
+    For each side and each strength component, ``merge_asof`` (backward, allow-exact) takes the
+    latest ratings version with ``date <= match date`` — the leak-free as-of join, equivalent to
+    :func:`core.squads.strength_as_of`. Missing teams/dates default to ``SQUAD_OVR_BASE`` (so two
+    unrated sides give a 0 diff). The four diffs come from the SINGLE shared formula in
+    :func:`core.squads._diffs_from_components`, so this batch path matches the single-match path
+    exactly. ``squad_table=None`` yields all zeros (back-compat).
+    """
+    base = config.SQUAD_OVR_BASE
+    if squad_table is None or len(squad_table) == 0:
+        return pd.DataFrame(dict.fromkeys(config.SQUAD_FEATURES, 0.0), index=matches.index)
+    sq = squad_table[squads.COLUMNS].sort_values("date", kind="mergesort")
+
+    def _side(team_col: str) -> dict[str, pd.Series]:
+        left = (
+            matches[["date", team_col]]
+            .rename(columns={team_col: "team"})
+            .reset_index()  # stash the original index so we can realign after the asof sort
+            .sort_values("date", kind="mergesort")
+        )
+        merged = pd.merge_asof(
+            left, sq, on="date", by="team", direction="backward", allow_exact_matches=True
+        ).set_index("index")
+        return {m: merged[m].reindex(matches.index).fillna(base) for m in squads.METRICS}
+
+    diffs = squads._diffs_from_components(_side("home_team"), _side("away_team"))
+    return pd.DataFrame(
+        {c: diffs[c].astype(float) for c in config.SQUAD_FEATURES}, index=matches.index
+    )
+
+
+def _diffs_for(strength: dict[str, dict[str, float]], home: str, away: str) -> dict[str, float]:
+    """Scalar squad diffs for one match from a ``strength_as_of`` mapping (single-match / inference).
+
+    Uses the same shared :func:`core.squads._diffs_from_components` formula as the batch path, with
+    the fixed default components for any team absent from the as-of version.
+    """
+    home_c = strength.get(home, squads.DEFAULT_COMPONENTS)
+    away_c = strength.get(away, squads.DEFAULT_COMPONENTS)
+    return squads._diffs_from_components(home_c, away_c)
+
+
 def _outcome_points(team_is_home: bool, result: str) -> int:
     """3/1/0 points for a team given the {H,D,A} result and whether it was the home side."""
     if result == "D":
@@ -113,14 +158,16 @@ def build_features(
     matches: pd.DataFrame,
     rankings: pd.DataFrame | None = None,
     train_start_year: int | None = None,
+    squads: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Build the full feature table from a cleaned, date-sorted match frame.
 
     Elo is added in a batched pass; the rolling form / head-to-head / rest features are then
     accumulated in a single date-batched loop (state is updated only *after* a day's features
     are read, so same-day matches never see each other). The FIFA-points difference is attached
-    point-in-time from ``rankings`` (see :func:`_attach_points_diff`). Optionally filters the
-    returned rows to ``year >= train_start_year`` while still having used full history to warm up.
+    point-in-time from ``rankings`` (see :func:`_attach_points_diff`) and the squad-strength diffs
+    from ``squads`` (see :func:`_attach_squad_diffs`). Optionally filters the returned rows to
+    ``year >= train_start_year`` while still having used full history to warm up.
     """
     df = compute_elo(matches)
 
@@ -179,6 +226,9 @@ def build_features(
     ]
     out["neutral"] = out["neutral"].astype(int)
     out["fifa_points_diff"] = _attach_points_diff(out, rankings)
+    squad_diffs = _attach_squad_diffs(out, squads)
+    for col in config.SQUAD_FEATURES:
+        out[col] = squad_diffs[col]
 
     cols = config.FEATURES + [c for c in META_COLUMNS if c not in config.FEATURES]
     result = out[cols]
@@ -198,13 +248,15 @@ def features_for_match(
     neutral: bool,
     is_host_home: int | bool,
     rankings: pd.DataFrame | None = None,
+    squads: pd.DataFrame | None = None,
 ) -> dict[str, float]:
     """Compute one match's features from a history frame, using only rows before ``date``.
 
     ``history`` may contain anything; only matches strictly before ``date`` are used. The FIFA
-    points difference comes from ``rankings`` as of ``date`` (``<=``, matching the batch
-    ``merge_asof``). Returns a dict keyed by :data:`core.config.FEATURES`. This is the inference
-    path and the reference implementation the no-leakage test checks ``build_features`` against.
+    points difference comes from ``rankings`` as of ``date`` and the squad diffs from ``squads`` as
+    of ``date`` (``<=``, matching the batch ``merge_asof``). Returns a dict keyed by
+    :data:`core.config.FEATURES`. This is the inference path and the reference implementation the
+    no-leakage test checks ``build_features`` against.
     """
     date = pd.Timestamp(date)
     hist = history[history["date"] < date]
@@ -216,6 +268,8 @@ def features_for_match(
     fifa_points_diff = fifa_pts.get(home, config.FIFA_POINTS_BASE) - fifa_pts.get(
         away, config.FIFA_POINTS_BASE
     )
+
+    squad_diffs = _diffs_for(strength_as_of(squads, date), home, away)
 
     form_home, gd_home = _ppg_gd(_team_form_list(hist, home))
     form_away, gd_away = _ppg_gd(_team_form_list(hist, away))
@@ -250,6 +304,7 @@ def features_for_match(
         "is_host_home": int(bool(is_host_home)),
         "days_rest_home": rest_home,
         "days_rest_away": rest_away,
+        **squad_diffs,
     }
 
 
@@ -290,6 +345,9 @@ class InferenceState:
     as_of: pd.Timestamp
     teams: list[str] = field(default_factory=list)
     fifa_points: dict[str, float] = field(default_factory=dict)  # current points (latest snapshot)
+    squad_strength: dict[str, dict[str, float]] = field(
+        default_factory=dict
+    )  # current squad components per team (latest version)
 
     def feature_row(
         self,
@@ -319,16 +377,21 @@ class InferenceState:
             "is_host_home": int(bool(is_host_home)),
             "days_rest_home": _rest_days(self.team_last_date.get(home), ref),
             "days_rest_away": _rest_days(self.team_last_date.get(away), ref),
+            **_diffs_for(self.squad_strength, home, away),
         }
 
 
 def build_inference_state(
-    matches: pd.DataFrame, rankings: pd.DataFrame | None = None
+    matches: pd.DataFrame,
+    rankings: pd.DataFrame | None = None,
+    squads: pd.DataFrame | None = None,
 ) -> InferenceState:
     """Replay the full history once to capture each team's current strength state.
 
-    ``rankings`` (if given) sets each team's current FIFA points to the latest snapshot — for the
-    deployed 2026 predictor this is the committed current-ranking snapshot.
+    ``rankings`` / ``squads`` (if given) set each team's current FIFA points and squad components to
+    the latest snapshot — for the deployed 2026 predictor these are the committed current-ranking
+    and current-squads snapshots. Either may be ``None`` (those features fall back to neutral
+    defaults), so callers that don't enrich (e.g. the API stub) still work.
     """
     ratings = ratings_as_of(matches, None)
     team_form: dict[str, list] = {}
@@ -353,4 +416,5 @@ def build_inference_state(
         as_of=matches["date"].max(),
         teams=sorted(set(matches["home_team"]) | set(matches["away_team"])),
         fifa_points=points_as_of(rankings, None),
+        squad_strength=strength_as_of(squads, None),
     )
