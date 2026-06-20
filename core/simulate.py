@@ -8,10 +8,18 @@ unit-tested (see ``tests/test_simulate_format.py``):
   **Round of 32**.
 * Single elimination from there: R32 -> R16 -> QF -> SF -> Final. One champion.
 
-Match outcomes are sampled from the model's calibrated probabilities. Scorelines (needed only
-for the points -> goal-difference -> goals-scored tiebreakers) are drawn from independent
-Poissons whose means are shifted by the model's predicted supremacy (P(home) - P(away)); a
-drawn knockout is resolved in favour of the stronger side (a proxy for extra time + penalties).
+The knockout phase follows the **official 2026 progression rules**, loaded from
+``data/fifa_world_cup_2026_rules.json`` via :mod:`core.knockout` (the single source of truth): the
+fixed match DAG (M73→M104) and FIFA's 495-row **Annexe C** matrix, which assigns each Annexe-eligible
+group winner its best-third opponent from *which eight groups* supplied the qualifiers. Group
+ordering uses the official tiebreakers (head-to-head → overall → FIFA ranking; see
+:func:`order_standings`).
+
+Match outcomes are sampled from the model's calibrated probabilities. Scorelines (needed for the
+points -> goal-difference -> goals-scored tiebreakers, and the head-to-head mini-tables) are drawn
+from independent Poissons whose means are shifted by the model's predicted supremacy
+(P(home) - P(away)); a drawn knockout is resolved in favour of the stronger side (a proxy for extra
+time + penalties).
 """
 
 from __future__ import annotations
@@ -22,6 +30,7 @@ import numpy as np
 import pandas as pd
 
 from core import bracket as bracket_mod
+from core import knockout
 from core.config import SEED
 
 # Round-robin pairing order for the 4 teams in a group (by their index 0..3).
@@ -36,15 +45,105 @@ SCORE_MAX_TRIES = 24
 STAGES = ["R32", "R16", "QF", "SF", "Final", "Champion"]
 
 
-def select_best_thirds(thirds: list[dict], k: int = 8) -> list[dict]:
-    """Return the ``k`` best third-placed teams, ranked by points, goal difference, goals for.
+def _fifa_rank_key(team: str, fifa_rank: dict[str, int] | None) -> float:
+    """Sort key for the FIFA-ranking tiebreaker: a *better* (lower) position sorts higher.
 
-    Each input dict must carry ``pts``, ``gd``, ``gf`` and a precomputed ``tiebreak`` random
-    value (so ties resolve deterministically within a simulation). This is the piece the 2026
-    format hinges on, so it is a standalone, directly tested function.
+    Returned for ``reverse=True`` sorts, so a smaller rank number yields a larger key; teams with no
+    ranking on file get ``-inf`` so they fall behind any ranked team but never crash the sort. When
+    ``fifa_rank`` is ``None`` (a bare simulator) every team gets ``-inf`` and the criterion is inert.
     """
-    ranked = sorted(thirds, key=lambda t: (t["pts"], t["gd"], t["gf"], t["tiebreak"]), reverse=True)
+    rank = fifa_rank.get(team) if fifa_rank else None
+    return -float(rank) if rank is not None else float("-inf")
+
+
+def select_best_thirds(
+    thirds: list[dict], k: int = 8, fifa_rank: dict[str, int] | None = None
+) -> list[dict]:
+    """Return the ``k`` best third-placed teams, by the official cross-group ranking criteria.
+
+    Order (FIFA Annexe / Article 13): most points → best goal difference → most goals scored →
+    higher FIFA-ranking position → a deterministic random ``tiebreak`` (the team-conduct-score and
+    "successively earlier rankings" steps are not modelled — see :func:`order_standings`). This is a
+    cross-group comparison, so there is no head-to-head step. ``fifa_rank`` maps team → 1-based FIFA
+    position (``None`` skips that criterion, keeping bare-simulator tests deterministic). The piece
+    the 2026 format hinges on, so it is a standalone, directly tested function.
+    """
+    ranked = sorted(
+        thirds,
+        key=lambda t: (
+            t["pts"],
+            t["gd"],
+            t["gf"],
+            _fifa_rank_key(t["team"], fifa_rank),
+            t["tiebreak"],
+        ),
+        reverse=True,
+    )
     return ranked[:k]
+
+
+def _head_to_head(block: list[dict], results: list[tuple]) -> dict[str, dict]:
+    """Mini-table (pts / gd / gf) over only the matches played *among* a set of tied teams."""
+    tied = {s["team"] for s in block}
+    h2h = {t: {"pts": 0, "gd": 0, "gf": 0} for t in tied}
+    for a, b, ga, gb in results:
+        if a in tied and b in tied:
+            h2h[a]["gf"] += ga
+            h2h[b]["gf"] += gb
+            h2h[a]["gd"] += ga - gb
+            h2h[b]["gd"] += gb - ga
+            if ga > gb:
+                h2h[a]["pts"] += 3
+            elif ga == gb:
+                h2h[a]["pts"] += 1
+                h2h[b]["pts"] += 1
+            else:
+                h2h[b]["pts"] += 3
+    return h2h
+
+
+def order_standings(
+    standings: list[dict], results: list[tuple], fifa_rank: dict[str, int] | None = None
+) -> list[dict]:
+    """Order a group's four teams (1st → 4th) by the official 2026 tiebreakers.
+
+    ``standings`` carries each team's overall ``pts``/``gd``/``gf`` and a random ``tiebreak``;
+    ``results`` is the list of ``(home, away, home_goals, away_goals)`` for the six group matches
+    (used to build the head-to-head mini-tables). Teams are first grouped by overall points; within
+    any points-tied block the order is, in sequence: head-to-head points → h2h goal difference → h2h
+    goals → overall goal difference → overall goals → higher FIFA-ranking position → the random
+    tiebreak.
+
+    Honest simplifications, documented in the README / *Under the Hood*: the **team-conduct score**
+    (no cards are simulated) and the **"successively earlier FIFA rankings"** step are not modelled —
+    the random ``tiebreak`` stands in. The "reapply head-to-head to the still-tied subset" rule is
+    approximated by a single composite sort over the tied block rather than exact iterative
+    re-grouping (a rare Monte-Carlo edge case).
+    """
+    by_pts: dict[int, list[dict]] = {}
+    for s in standings:
+        by_pts.setdefault(s["pts"], []).append(s)
+
+    ordered: list[dict] = []
+    for pts in sorted(by_pts, reverse=True):
+        block = by_pts[pts]
+        if len(block) > 1:
+            h2h = _head_to_head(block, results)
+            block = sorted(
+                block,
+                key=lambda s: (
+                    h2h[s["team"]]["pts"],
+                    h2h[s["team"]]["gd"],
+                    h2h[s["team"]]["gf"],
+                    s["gd"],
+                    s["gf"],
+                    _fifa_rank_key(s["team"], fifa_rank),
+                    s["tiebreak"],
+                ),
+                reverse=True,
+            )
+        ordered.extend(block)
+    return ordered
 
 
 @dataclass
@@ -67,7 +166,13 @@ class TournamentSimulator:
     so the simulator is decoupled from the model internals (and easy to stub in tests).
     """
 
-    def __init__(self, predictor, wc2026: dict, seed: int = SEED):
+    def __init__(
+        self,
+        predictor,
+        wc2026: dict,
+        seed: int = SEED,
+        fifa_rank: dict[str, int] | None = None,
+    ):
         self.predictor = predictor
         self.wc = wc2026
         self.rng = np.random.default_rng(seed)
@@ -76,8 +181,10 @@ class TournamentSimulator:
         self.idx = {t: i for i, t in enumerate(self.teams)}
         self.group_of = {t: g for g, teams in self.groups.items() for t in teams}
         self.host_groups = wc2026.get("host_groups", {})
-        self.r32_template = wc2026["r32_template"]
         self.best_thirds_count = wc2026.get("best_thirds_count", 8)
+        # Team -> 1-based FIFA ranking position, the official group/best-third tiebreaker. ``None``
+        # (a bare simulator) skips that criterion, keeping the structure tests deterministic.
+        self.fifa_rank = fifa_rank
         self._known = self._index_known_results(wc2026.get("known_results", []))
         self._prepare()
 
@@ -114,6 +221,17 @@ class TournamentSimulator:
         return lam_a, lam_b
 
     def _prepare(self):
+        # Official knockout structure (DAG + Annexe C) — the single source of truth, loaded once.
+        self.spec = knockout.build_spec(knockout.load_rules())
+        self.layout = knockout.occupancy_layout(self.spec)
+        self._by_id = {m.id: m for m in self.spec.matches}
+        # Static Round-of-32 slot identities, aligned with the occupancy participant-slot order, for
+        # the bracket sub-labels (e.g. "Winners Group E" / "Best 3rd (vs Group E)").
+        self._r32_tokens = [
+            self._by_id[mid].a if side == "a" else self._by_id[mid].b
+            for mid, side in self.layout.r32_slot_order
+        ]
+
         self.fixtures = self._group_fixtures()
         # Pairwise probability that row-team beats col-team in a neutral knockout tie.
         n = len(self.teams)
@@ -147,9 +265,14 @@ class TournamentSimulator:
         return {0: (1, 0), 1: (1, 1), 2: (0, 1)}[int(outcome)]
 
     def _play_group(self, g: str):
-        """Simulate one group; return ordered standings as a list of dicts (1st..4th)."""
+        """Simulate one group; return ordered standings as a list of dicts (1st..4th).
+
+        Every scoreline is retained as an oriented ``(home, away, gh, ga)`` record so the official
+        head-to-head tiebreakers can be built; final ordering is delegated to :func:`order_standings`.
+        """
         teams = self.groups[g]
         stat = {t: {"pts": 0, "gd": 0, "gf": 0} for t in teams}
+        results: list[tuple] = []
         for a, b, p, lam_a, lam_b in self.fixtures[g]:
             known = self._known.get(frozenset((a, b)))
             if known is not None:
@@ -158,6 +281,7 @@ class TournamentSimulator:
                     ga, gb = gb, ga
             else:
                 ga, gb = self._sample_score(p, lam_a, lam_b)
+            results.append((a, b, ga, gb))
             stat[a]["gf"] += ga
             stat[b]["gf"] += gb
             stat[a]["gd"] += ga - gb
@@ -172,42 +296,19 @@ class TournamentSimulator:
         standings = [
             {"team": t, "group": g, "tiebreak": self.rng.random(), **stat[t]} for t in teams
         ]
-        standings.sort(key=lambda s: (s["pts"], s["gd"], s["gf"], s["tiebreak"]), reverse=True)
-        return standings
-
-    def _assign_thirds(self, qualifying_thirds: list[dict]) -> dict[str, str]:
-        """Map third-place qualifiers to the template's T_n slots, avoiding a team meeting its
-        own group's winner in the Round of 32 (FIFA's exact slotting table is approximated)."""
-        # Winner-group each T_n slot faces, read off the committed template.
-        faces = {}
-        for a, b in self.r32_template:
-            for tok, other in ((a, b), (b, a)):
-                if tok.startswith("T_"):
-                    n = int(tok.split("_")[1])
-                    faces[n] = other.split("_")[1] if other.startswith("W_") else None
-        assignment = {}
-        remaining = list(qualifying_thirds)
-        for n in range(1, self.best_thirds_count + 1):
-            avoid = faces.get(n)
-            pick = next((t for t in remaining if t["group"] != avoid), remaining[0])
-            assignment[f"T_{n}"] = pick["team"]
-            remaining.remove(pick)
-        return assignment
-
-    def _resolve_slot(self, token: str, winners, runners, thirds_slot) -> str:
-        kind, g = token.split("_")
-        if kind == "W":
-            return winners[g]
-        if kind == "R":
-            return runners[g]
-        return thirds_slot[token]
+        return order_standings(standings, results, self.fifa_rank)
 
     def _knockout(self, a: str, b: str) -> str:
         p = self.adv[self.idx[a], self.idx[b]]
         return a if self.rng.random() < p else b
 
     def simulate_once(self) -> dict:
-        """Play one full tournament; return the set of teams reaching each stage + the final."""
+        """Play one full tournament; return the set of teams reaching each stage + the final.
+
+        Plays the 12 groups, picks the eight best third-placed teams, resolves the official Annexe C
+        third-place opponents from *which eight groups* qualified, then walks the fixed match DAG
+        (M73→M104) once, resolving each slot token to a team and sampling the knockout result.
+        """
         winners, runners, thirds = {}, {}, []
         for g in self.groups:
             standings = self._play_group(g)
@@ -215,29 +316,58 @@ class TournamentSimulator:
             runners[g] = standings[1]["team"]
             thirds.append(standings[2])
 
-        best_thirds = select_best_thirds(thirds, self.best_thirds_count)
-        thirds_slot = self._assign_thirds(best_thirds)
+        best_thirds = select_best_thirds(thirds, self.best_thirds_count, self.fifa_rank)
+        qualifying_groups = {t["group"] for t in best_thirds}
+        annex = knockout.annex_assignment(self.spec.annex_matrix, qualifying_groups)
+        third_of_group = {t["group"]: t["team"] for t in thirds}
+
+        won: dict[str, str] = {}  # advance/loser token (W73 / L101) -> team
+        winner_team: dict[str, str] = {}  # match id -> winner
+        participants: dict[str, tuple[str, str]] = {}  # match id -> (team_a, team_b)
+
+        def resolve(token: str) -> str:
+            if token.startswith(knockout.ANNEX_PREFIX):
+                third_slot = annex[token[len(knockout.ANNEX_PREFIX) :]]  # "1E" -> "3F"
+                return third_of_group[third_slot[1:]]
+            head = token[0]
+            if head in ("W", "L"):
+                return won[token]
+            group = token[1:]
+            if head == "1":
+                return winners[group]
+            if head == "2":
+                return runners[group]
+            return third_of_group[group]  # "3X" — a third-placed team referenced directly
+
+        for m in self.spec.matches:
+            a, b = resolve(m.a), resolve(m.b)
+            participants[m.id] = (a, b)
+            win = self._knockout(a, b)
+            winner_team[m.id] = win
+            if m.win_token:
+                won[m.win_token] = win
+            won[m.lose_token] = (
+                b if win == a else a
+            )  # loser (the third-place match consumes L101/L102)
+
+        champion = winner_team[self.spec.final_id]
+        rows = self.layout.rows_by_round
 
         reached = {s: [] for s in STAGES}
-        r32 = [t["team"] for t in best_thirds] + list(winners.values()) + list(runners.values())
-        reached["R32"] = r32
+        # Teams that *reached* each stage: all 32 R32 participants, then each round's winners.
+        reached["R32"] = (
+            list(winners.values()) + list(runners.values()) + [t["team"] for t in best_thirds]
+        )
+        reached["R16"] = [winner_team[mid] for mid in rows["R32"]]
+        reached["QF"] = [winner_team[mid] for mid in rows["R16"]]
+        reached["SF"] = [winner_team[mid] for mid in rows["QF"]]
+        reached["Final"] = [winner_team[mid] for mid in rows["SF"]]
+        reached["Champion"] = [champion]
 
-        # Build R32 matchups from the template, then play down the bracket.
-        round_pairs = [
-            (
-                self._resolve_slot(x, winners, runners, thirds_slot),
-                self._resolve_slot(y, winners, runners, thirds_slot),
-            )
-            for x, y in self.r32_template
-        ]
-        self._last_r32_pairs = list(round_pairs)
-        for stage in ["R16", "QF", "SF", "Final", "Champion"]:
-            if stage == "Champion":  # round_pairs is now the single final matchup
-                self._last_final = tuple(sorted(round_pairs[0]))
-            won = [self._knockout(a, b) for a, b in round_pairs]
-            reached[stage] = won
-            if stage != "Champion":
-                round_pairs = [(won[i], won[i + 1]) for i in range(0, len(won), 2)]
+        self._last_participants = participants
+        self._last_winner_team = winner_team
+        self._last_r32_pairs = [participants[mid] for mid in rows["R32"]]
+        self._last_final = tuple(sorted(participants[self.spec.final_id]))
         return reached
 
     # -- aggregate ------------------------------------------------------------------
@@ -254,22 +384,32 @@ class TournamentSimulator:
         final_pairs: dict[tuple, int] = {}
 
         # Per-position occupancy: occ[round][slot, team] counts how many tournaments put each team in
-        # that bracket slot. ``reached[stage]`` is already in bracket order; the Round-of-32 *slot*
-        # order comes from the resolved template pairs (``_last_r32_pairs``). See :mod:`core.bracket`.
+        # that bracket participant slot. The slot geometry comes from the official-bracket layout
+        # (:func:`core.knockout.occupancy_layout`): participant slot ``p`` of a round holds the winner
+        # of the previous round's match at row ``p`` — so occupancy and advancement are one array read
+        # a round apart, the identity :mod:`core.bracket` is built on.
         occ = {k: np.zeros((bracket_mod.PARTICIPANTS[k], n)) for k in bracket_mod.PARTICIPANTS}
-        ko_rows = {k: np.arange(bracket_mod.PARTICIPANTS[k]) for k in ["R16", "QF", "SF", "Final"]}
-        r32_rows = np.arange(32)
+        rows = self.layout.rows_by_round
+        r32_slots = self.layout.r32_slot_order
+        feed = [("R16", "R32"), ("QF", "R16"), ("SF", "QF"), ("Final", "SF")]
 
         for _ in range(n_sims):
             reached = self.simulate_once()
             for s in STAGES:
                 for t in reached[s]:
                     counts[s][self.idx[t]] += 1
-            flat32 = [t for pair in self._last_r32_pairs for t in pair]
-            occ["R32"][r32_rows, [self.idx[t] for t in flat32]] += 1
-            for s in ["R16", "QF", "SF", "Final"]:
-                occ[s][ko_rows[s], [self.idx[t] for t in reached[s]]] += 1
-            occ["Champion"][0, self.idx[reached["Champion"][0]]] += 1
+            parts = self._last_participants
+            wt = self._last_winner_team
+            # Round-of-32 participants, in bracket participant-slot order.
+            r32_idx = [
+                self.idx[parts[mid][0] if side == "a" else parts[mid][1]] for mid, side in r32_slots
+            ]
+            occ["R32"][np.arange(32), r32_idx] += 1
+            # Each later round's slot p is the winner of the previous round's match at row p.
+            for rk, prev in feed:
+                w_idx = [self.idx[wt[mid]] for mid in rows[prev]]
+                occ[rk][np.arange(len(w_idx)), w_idx] += 1
+            occ["Champion"][0, self.idx[wt[self.spec.final_id]]] += 1
             fp = self._last_final
             final_pairs[fp] = final_pairs.get(fp, 0) + 1
 
@@ -279,11 +419,10 @@ class TournamentSimulator:
         table = table.sort_values("Champion", ascending=False).reset_index(drop=True)
 
         best_final = max(final_pairs.items(), key=lambda kv: kv[1])
-        r32_tokens = [tok for pair in self.r32_template for tok in pair]
         return SimulationResult(
             table=table,
             most_likely_final=best_final[0],
             most_likely_final_prob=best_final[1] / n_sims,
             n_sims=n_sims,
-            bracket=bracket_mod.build_bracket(occ, self.teams, n_sims, r32_tokens),
+            bracket=bracket_mod.build_bracket(occ, self.teams, n_sims, self._r32_tokens),
         )

@@ -20,6 +20,10 @@ PROCESSED_DIR = DATA_DIR / "processed"
 MODELS_DIR = BASE_DIR / "models"
 
 WC2026_PATH = DATA_DIR / "wc2026.json"
+# Official 2026 progression rules — the knockout match DAG (M73→M104), FIFA's 495-row Annexe C
+# third-place matrix, and the group tiebreaker order. The single source of truth for the knockout
+# structure and best-third slotting (see core.knockout); committed, machine-readable.
+WC2026_RULES_PATH = DATA_DIR / "fifa_world_cup_2026_rules.json"
 RAW_RESULTS_PATH = RAW_DIR / "results.csv"
 WC2026_LIVE_CACHE_PATH = RAW_DIR / "wc2026_live.json"  # cached live-results snapshot (gitignored)
 FIFA_RANKING_CACHE_PATH = (

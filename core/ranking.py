@@ -123,6 +123,21 @@ def points_as_of(
     return dict(zip(latest["team"], latest["total_points"].astype(float), strict=True))
 
 
+def positions_as_of(
+    rankings: pd.DataFrame, as_of_date: pd.Timestamp | None = None
+) -> dict[str, int]:
+    """Map each team to its 1-based FIFA ranking position (1 = top) as of a date.
+
+    Derived from the point-in-time points table (:func:`points_as_of`) by ordering teams on points
+    descending — mirroring how the published ranking is ordered. Used as the official group /
+    best-third tiebreaker in the tournament simulation (:func:`core.simulate.order_standings`). Only
+    the latest snapshot is used: the "successively earlier rankings" step is not modelled (documented).
+    """
+    pts = points_as_of(rankings, as_of_date)
+    ordered = sorted(pts, key=lambda t: pts[t], reverse=True)
+    return {t: i + 1 for i, t in enumerate(ordered)}
+
+
 # --------------------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------------------

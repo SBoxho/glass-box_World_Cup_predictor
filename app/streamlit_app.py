@@ -128,9 +128,26 @@ def load_metrics():
     return None
 
 
+@st.cache_resource(show_spinner=False)
+def load_fifa_positions():
+    """Team → 1-based FIFA ranking position, the official group/best-third tiebreaker. Best-effort.
+
+    Reuses the same ranking load as the model features (:func:`_load_rankings_safe`) and derives
+    positions from the latest snapshot. Returns ``{}`` on any failure so the simulator simply skips
+    the FIFA-ranking criterion (Elo/form still drive everything) rather than taking the app down.
+    """
+    rankings = _load_rankings_safe()
+    if rankings is None:
+        return {}
+    try:
+        return ranking.positions_as_of(rankings)
+    except Exception:  # optional tiebreaker enrichment — never let it take the whole app down
+        return {}
+
+
 @st.cache_resource(show_spinner="Preparing matchup probabilities …")
-def get_simulator(_predictor, _wc, key: str):
-    return simulate.TournamentSimulator(_predictor, _wc)
+def get_simulator(_predictor, _wc, _fifa_rank, key: str):
+    return simulate.TournamentSimulator(_predictor, _wc, fifa_rank=_fifa_rank or None)
 
 
 @st.cache_data(ttl=600, show_spinner="Fetching live World Cup results …")
@@ -496,7 +513,13 @@ def tab_simulator(predictor, artifact, wc):
         st.write("")
         run = st.button("Run simulation", type="primary", width="stretch")
 
-    sim = get_simulator(predictor, wc_eff, f"{artifact.trained_through}|{len(locked)}|{fetched_at}")
+    fifa_rank = load_fifa_positions()
+    sim = get_simulator(
+        predictor,
+        wc_eff,
+        fifa_rank,
+        f"{artifact.trained_through}|{len(locked)}|{fetched_at}|fifa{len(fifa_rank)}",
+    )
 
     if run:
         with st.spinner(f"Simulating {n_sims:,} tournaments …"):
@@ -591,8 +614,9 @@ def tab_my_team(predictor, artifact, explainer, wc, state):
     """
     snapshot = st.session_state.get("live_snapshot")
     wc_eff, locked, fetched_at, source = _effective_results(wc, snapshot)
-    key = f"{artifact.trained_through}|{len(locked)}|{fetched_at}"
-    sim = get_simulator(predictor, wc_eff, key)
+    fifa_rank = load_fifa_positions()
+    key = f"{artifact.trained_through}|{len(locked)}|{fetched_at}|fifa{len(fifa_rank)}"
+    sim = get_simulator(predictor, wc_eff, fifa_rank, key)
     result = st.session_state.get("sim_result")
     if result is None:
         result = _team_sim_result(sim, key, 10000, int(config.SEED))
@@ -792,13 +816,19 @@ def tab_under_the_hood(metrics, wc, artifact):
 - **Model:** multiclass XGBoost, isotonic-calibrated via cross-validation so the numbers are
   usable as real probabilities. Neutral-venue predictions are symmetrized.
 - **Simulation:** outcomes sampled from calibrated probabilities; scorelines from Poisson
-  draws for tiebreakers; knockout draws resolved by relative strength (extra-time proxy).
+  draws for tiebreakers; knockout draws resolved by relative strength (extra-time proxy). The
+  knockout phase follows the **official 2026 rules** — the fixed match DAG (M73→M104) and FIFA's
+  495-row **Annexe C** third-place matrix, loaded from a committed rules file as the single source
+  of truth — and group ordering uses the official tiebreakers (head-to-head → overall goal
+  difference / goals → FIFA ranking).
 
 **Limitations** — international football is a small-data, high-variance sport: upsets are
 common and a single tournament is one noisy draw from these distributions. Squad changes,
-injuries, and form swings are only partially captured. The Round-of-32 third-place slotting
-approximates FIFA's exact combination table. **This is an educational / decision-support
-tool — probabilistic, not betting advice.**
+injuries, and form swings are only partially captured. Two group tiebreaker steps are not
+modelled and fall back to a deterministic random draw: the **team-conduct (fair-play) score** (no
+cards are simulated) and the **"successively earlier FIFA rankings"** step (only the latest
+snapshot is on file). **This is an educational / decision-support tool — probabilistic, not betting
+advice.**
             """
         )
 

@@ -69,10 +69,52 @@ def test_single_simulation_bracket_shape():
 
 
 def test_no_same_group_matchups_in_r32():
-    sim, _ = _make_sim(seed=5)
-    sim.simulate_once()
-    for a, b in sim._last_r32_pairs:
-        assert sim.group_of[a] != sim.group_of[b], f"same-group R32 rematch: {a} vs {b}"
+    # Now structurally guaranteed by the official bracket + Annexe C (no team meets its own group in
+    # the R32), so assert it holds across many seeds and repeated draws, not just one.
+    for seed in range(6):
+        sim, _ = _make_sim(seed=seed)
+        for _ in range(20):
+            reached = sim.simulate_once()
+            assert len(set(reached["R32"])) == 32  # every slate is 32 distinct teams
+            for a, b in sim._last_r32_pairs:
+                assert sim.group_of[a] != sim.group_of[b], f"same-group R32 rematch: {a} vs {b}"
+
+
+def test_official_group_tiebreaker_prefers_head_to_head():
+    # Three teams level on points. Overall goal difference says A > B > C, but the head-to-head
+    # mini-table (C beat both A and B; A beat B) says C > A > B — the official order follows H2H.
+    standings = [
+        {"team": "A", "group": "Z", "pts": 6, "gd": 10, "gf": 12, "tiebreak": 0.5},
+        {"team": "B", "group": "Z", "pts": 6, "gd": 5, "gf": 8, "tiebreak": 0.5},
+        {"team": "C", "group": "Z", "pts": 6, "gd": 1, "gf": 3, "tiebreak": 0.5},
+        {"team": "D", "group": "Z", "pts": 0, "gd": -16, "gf": 0, "tiebreak": 0.5},
+    ]
+    results = [
+        ("C", "A", 1, 0),  # head-to-head among the tied set
+        ("C", "B", 1, 0),
+        ("A", "B", 1, 0),
+        ("A", "D", 5, 0),  # blow-out wins over D explain the misleading overall GD
+        ("B", "D", 4, 0),
+        ("C", "D", 1, 0),
+    ]
+    order = [s["team"] for s in simulate.order_standings(standings, results)]
+    assert order == ["C", "A", "B", "D"]
+
+
+def test_fifa_ranking_breaks_an_otherwise_exact_tie():
+    # Two teams identical on every on-pitch criterion (drawn head-to-head, equal overall GD/GF) →
+    # the better FIFA position decides, ahead of the random tiebreak.
+    standings = [
+        {"team": "P", "group": "Z", "pts": 3, "gd": 0, "gf": 1, "tiebreak": 0.1},
+        {"team": "Q", "group": "Z", "pts": 3, "gd": 0, "gf": 1, "tiebreak": 0.9},
+    ]
+    results = [("P", "Q", 1, 1)]  # drawn head-to-head — no separation before FIFA rank
+    order = [
+        s["team"] for s in simulate.order_standings(standings, results, fifa_rank={"P": 5, "Q": 20})
+    ]
+    assert order == ["P", "Q"]  # P (5th) beats Q (20th), despite P's lower random tiebreak value
+    # Without the FIFA criterion the random tiebreak decides instead (Q's 0.9 > P's 0.1).
+    assert [s["team"] for s in simulate.order_standings(standings, results)] == ["Q", "P"]
 
 
 def test_select_best_thirds_ranking():
