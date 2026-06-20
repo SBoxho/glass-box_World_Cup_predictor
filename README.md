@@ -68,6 +68,7 @@ glassbox-worldcup/
 │   ├── model.py               # train / calibrate / persist / predict (+ neutral symmetry)
 │   ├── explain.py             # SHAP wrappers: global summary + per-match + narrative
 │   ├── simulate.py            # Monte Carlo tournament (48-team / Round-of-32 format)
+│   ├── knockout.py            # official knockout DAG (M73→M104) + Annexe C, from the rules file
 │   ├── live.py                # live group results (openfootball CC0) -> simulator lock-in
 │   └── fixtures.py            # full 2026 schedule (kickoffs/venues/status) for Matchday Home
 ├── scripts/
@@ -78,7 +79,8 @@ glassbox-worldcup/
 │   ├── streamlit_app.py       # thin presentation layer + top-level nav — imports from core/
 │   └── components/            # presentation: Matchday Home, bracket, Choose Your Team page
 ├── api/main.py                # OPTIONAL FastAPI stub (decoupled-architecture demo, un-deployed)
-├── data/wc2026.json           # the real Dec-2025 draw: 12 groups, hosts, R32 bracket (committed)
+├── data/wc2026.json           # the real Dec-2025 draw: 12 groups, hosts, fixtures (committed)
+├── data/fifa_world_cup_2026_rules.json  # official knockout DAG + Annexe C + tiebreakers (committed)
 ├── data/squads2026.json       # 48 WC squads from EA FC 26 (committed; third-party estimates)
 ├── models/model.joblib        # trained + calibrated artifact (committed, ~2 MB)
 └── tests/                     # the guardrail tests (below)
@@ -155,9 +157,14 @@ only meet in the final.
 
 International football is a **small-data, high-variance** sport: upsets are common and a single
 tournament is one noisy draw from these distributions. Squad changes, injuries, and form swings
-are only partially captured by Elo and rolling form. The Round-of-32 third-place slotting
-**approximates** FIFA's exact combination table (the qualification logic — top 2 + 8 best thirds —
-is exact). **This is an educational / decision-support tool — probabilistic, not betting advice.**
+are only partially captured by Elo and rolling form. The knockout phase is the **official 2026
+structure** — the fixed match DAG (M73→M104) and FIFA's 495-row **Annexe C** third-place matrix,
+loaded from `data/fifa_world_cup_2026_rules.json` (the single source of truth) — and group ordering
+uses the official tiebreakers (head-to-head → overall goal difference / goals → FIFA ranking). Two
+tiebreaker steps are *not* modelled and fall back to a deterministic random draw: the **team-conduct
+(fair-play) score** (no cards are simulated) and the **"successively earlier FIFA rankings"** step
+(only the latest snapshot is on file). **This is an educational / decision-support tool —
+probabilistic, not betting advice.**
 
 ---
 

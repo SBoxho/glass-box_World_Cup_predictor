@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from core import config
+from core import config, knockout
 
 # Columns we rely on from the upstream results.csv schema.
 _RAW_COLUMNS = [
@@ -157,4 +157,19 @@ def validate_wc2026(data: dict) -> None:
         assert host in groups[grp], f"host {host} not present in its own group {grp}"
 
     assert data.get("best_thirds_count") == 8, "2026 format takes the 8 best third-placed teams"
-    assert len(data["r32_template"]) == 16, "Round of 32 needs exactly 16 matches"
+
+    # The knockout bracket + Annexe C now come from the official rules file (the single source of
+    # truth, loaded by core.knockout); assert its structural invariants here so a malformed rules
+    # file is caught at load time rather than mid-simulation.
+    spec = knockout.build_spec(knockout.load_rules())
+    r32 = [m for m in spec.matches if m.round == "R32"]
+    assert len(r32) == 16, f"Round of 32 needs exactly 16 matches, got {len(r32)}"
+    ids = [m.id for m in spec.matches]
+    assert ids == [f"M{n}" for n in range(73, 105)], "knockout matches must be M73..M104 in order"
+    assert len(spec.annex_matrix) == 495, (
+        f"Annexe C must have 495 third-place rows, got {len(spec.annex_matrix)}"
+    )
+    annex_slots = {m.b for m in r32 if m.b.startswith(knockout.ANNEX_PREFIX)}
+    assert len(annex_slots) == 8, (
+        f"expected 8 Annexe-eligible group-winner slots, got {len(annex_slots)}"
+    )

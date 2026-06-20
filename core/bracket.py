@@ -46,22 +46,72 @@ N_MATCHES = {"R32": 16, "R16": 8, "QF": 4, "SF": 2, "Final": 1}
 
 
 def token_label(token: str | None) -> str | None:
-    """Human label for an R32-template slot token (``"W_A"`` → ``"Winners Group A"``), or ``None``.
+    """Human label for a Round-of-32 slot token, or ``None`` if it isn't a recognised slot.
 
-    Tokens come from ``data/wc2026.json`` ``r32_template``: ``W_x`` (group winner), ``R_x``
-    (runner-up), ``T_n`` (the n-th best third-placed team). These give each Round-of-32 slot a
-    stable bracket identity, so a card can show *what* the slot is even before *who* fills it.
+    Two token vocabularies are accepted so the label layer is agnostic to where the slots come from:
+
+    * the **official** rules-file tokens (:mod:`core.knockout`) — ``1X`` (group winner), ``2X``
+      (runner-up), ``3X`` (third-placed), and ``ANNEX_C_FOR_1X`` (the Annexe C best-third opponent of
+      group-``X``'s winner); and
+    * the legacy ``W_x`` / ``R_x`` / ``T_n`` template tokens (kept for backward compatibility).
+
+    Each gives a Round-of-32 slot a stable identity, so a card can show *what* the slot is even before
+    *who* fills it.
     """
-    if not token or "_" not in token:
+    if not token:
         return None
-    kind, rest = token.split("_", 1)
-    if kind == "W":
-        return f"Winners Group {rest}"
-    if kind == "R":
-        return f"Runners-up Group {rest}"
-    if kind == "T":
-        return f"3rd place #{rest}"
+    if token.startswith("ANNEX_C_FOR_"):
+        group = token[len("ANNEX_C_FOR_") + 1 :]  # "ANNEX_C_FOR_1E" -> "E"
+        return f"Best 3rd (vs Group {group})"
+    if token[0] in "123" and token[1:].isalpha():  # official 1X / 2X / 3X
+        kind, group = token[0], token[1:]
+        if kind == "1":
+            return f"Winners Group {group}"
+        if kind == "2":
+            return f"Runners-up Group {group}"
+        return f"3rd place Group {group}"
+    if "_" in token:  # legacy W_x / R_x / T_n
+        kind, rest = token.split("_", 1)
+        if kind == "W":
+            return f"Winners Group {rest}"
+        if kind == "R":
+            return f"Runners-up Group {rest}"
+        if kind == "T":
+            return f"3rd place #{rest}"
     return None
+
+
+def coherent_modal_assignment(round_occ: np.ndarray) -> list[int | None]:
+    """One team per slot for a round: a greedy maximum-weight assignment of teams to participant slots.
+
+    ``round_occ`` is a ``(slots, teams)`` occupancy-count matrix. We form every ``(count, slot,
+    team)`` triple, take them in descending count, and give each team to its highest-count *still
+    free* slot — so no team can lead two slots of the same round. That is the fix for a dominant team
+    rendering as both a group's plurality *winner* (its ``1C`` slot) **and** its plurality
+    *runner-up* (its ``2C`` slot): independent per-slot argmax double-counts it; this does not.
+
+    Greedy-by-descending-count (rather than an optimal Hungarian assignment) is deterministic,
+    ``O(slots·teams·log)``, and near-optimal on the sharply peaked occupancy matrices the simulator
+    produces — a drop-in upgrade to Hungarian is possible if ever needed. Returns a length-``slots``
+    list of the assigned team index, or ``None`` for a slot that received no team.
+    """
+    n_slots, n_teams = round_occ.shape
+    triples = [
+        (round_occ[s, j], s, j)
+        for s in range(n_slots)
+        for j in range(n_teams)
+        if round_occ[s, j] > 0
+    ]
+    triples.sort(
+        key=lambda t: (-t[0], t[1], t[2])
+    )  # deterministic: count desc, then slot, then team
+    slot_team: list[int | None] = [None] * n_slots
+    used: set[int] = set()
+    for _count, s, j in triples:
+        if slot_team[s] is None and j not in used:
+            slot_team[s] = j
+            used.add(j)
+    return slot_team
 
 
 def _dist(counts_row: np.ndarray, teams: list[str], n_sims: int, top_k: int, eps: float) -> list:
@@ -78,6 +128,39 @@ def _dist(counts_row: np.ndarray, teams: list[str], n_sims: int, top_k: int, eps
     return out
 
 
+def _lead_dist(
+    counts_row: np.ndarray,
+    teams: list[str],
+    n_sims: int,
+    top_k: int,
+    eps: float,
+    lead: int | None,
+) -> list:
+    """A slot's distribution (see :func:`_dist`) with the coherent lead team forced to element 0.
+
+    Only *which* team leads can change — every probability ``p`` is the team's own occupancy share,
+    left untouched (a glass-box honesty guarantee). Moving one element to the front keeps the tail
+    (index ≥ 1) descending while the list as a whole may not be — the deliberate, documented trade
+    for a coherent one-team-per-slot projection. ``lead`` is the team index chosen by
+    :func:`coherent_modal_assignment` (``None`` leaves the raw argmax order in place).
+    """
+    dist = _dist(counts_row, teams, n_sims, top_k, eps)
+    if lead is None:
+        return dist
+    lead_team = teams[lead]
+    for i, entry in enumerate(dist):
+        if entry["team"] == lead_team:
+            if i:
+                dist.insert(0, dist.pop(i))
+            return dist
+    # The coherent lead fell outside this slot's top-k / eps list — prepend it at its true share.
+    p = float(counts_row[lead]) / n_sims if n_sims > 0 else 0.0
+    if p > 0:
+        dist.insert(0, {"team": lead_team, "p": p})
+        del dist[top_k:]
+    return dist
+
+
 def build_bracket(
     occ: dict[str, np.ndarray],
     teams: list[str],
@@ -91,26 +174,35 @@ def build_bracket(
 
     ``occ[round]`` has shape ``(PARTICIPANTS[round], n_teams)``: row *p* counts how many of the
     ``n_sims`` tournaments placed each team in participant slot *p* of that round (bracket order).
-    ``r32_tokens`` (optional, length 32) gives each Round-of-32 slot its template identity for a
+    ``r32_tokens`` (optional, length 32) gives each Round-of-32 slot its official identity for a
     sub-label. Returns ``{"n_sims", "rounds": [...], "champion": [...]}`` where each round holds its
     matches and each match its ``top``/``bottom`` occupancy lists and ``advance`` distribution.
+
+    Each round is projected **coherently** — :func:`coherent_modal_assignment` picks a single leading
+    team per participant slot so no team heads two slots of the same round (an aggregation artifact a
+    dominant side would otherwise produce). Only the *leader* of each slot is pinned; the rest of the
+    per-slot distribution, and every probability, is the honest raw occupancy. A match's ``advance``
+    is reordered by the *next* round's slot leader, so the favourite shown advancing matches the team
+    shown occupying that slot one round on.
     """
+    assign = {rk: coherent_modal_assignment(occ[rk]) for rk in PARTICIPANTS}
     rounds = []
     for rk in ROUND_KEYS:
         nxt = occ[_NEXT[rk]]
         cur = occ[rk]
+        a_cur, a_nxt = assign[rk], assign[_NEXT[rk]]
         matches = []
         for m in range(N_MATCHES[rk]):
-            top = _dist(cur[2 * m], teams, n_sims, top_k, eps)
-            bottom = _dist(cur[2 * m + 1], teams, n_sims, top_k, eps)
-            advance = _dist(nxt[m], teams, n_sims, top_k, eps)
+            top = _lead_dist(cur[2 * m], teams, n_sims, top_k, eps, a_cur[2 * m])
+            bottom = _lead_dist(cur[2 * m + 1], teams, n_sims, top_k, eps, a_cur[2 * m + 1])
+            advance = _lead_dist(nxt[m], teams, n_sims, top_k, eps, a_nxt[m])
             match = {"round": rk, "index": m, "top": top, "bottom": bottom, "advance": advance}
             if rk == "R32" and r32_tokens is not None:
                 match["top_label"] = token_label(r32_tokens[2 * m])
                 match["bottom_label"] = token_label(r32_tokens[2 * m + 1])
             matches.append(match)
         rounds.append({"key": rk, "title": ROUND_TITLES[rk], "matches": matches})
-    champion = _dist(occ["Champion"][0], teams, n_sims, top_k, eps)
+    champion = _lead_dist(occ["Champion"][0], teams, n_sims, top_k, eps, assign["Champion"][0])
     return {"n_sims": n_sims, "rounds": rounds, "champion": champion}
 
 

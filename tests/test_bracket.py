@@ -24,11 +24,21 @@ from tests.test_simulate_format import StubPredictor
 # token_label — Round-of-32 slot identities
 # --------------------------------------------------------------------------------------
 def test_token_label():
+    # Legacy template tokens (kept for backward compatibility).
     assert cb.token_label("W_A") == "Winners Group A"
     assert cb.token_label("R_K") == "Runners-up Group K"
     assert cb.token_label("T_1") == "3rd place #1"
     assert cb.token_label(None) is None
     assert cb.token_label("garbage") is None
+
+
+def test_token_label_official_tokens():
+    # Official rules-file tokens (core.knockout): 1X / 2X / 3X and the Annexe C best-third slot.
+    assert cb.token_label("1E") == "Winners Group E"
+    assert cb.token_label("2A") == "Runners-up Group A"
+    assert cb.token_label("3C") == "3rd place Group C"
+    assert cb.token_label("ANNEX_C_FOR_1E") == "Best 3rd (vs Group E)"
+    assert cb.token_label("W74") is None  # not a Round-of-32 slot identity
 
 
 # --------------------------------------------------------------------------------------
@@ -242,10 +252,45 @@ def test_run_attaches_consistent_bracket():
     assert b["champion"][0]["team"] == top_row["team"]
     assert math.isclose(b["champion"][0]["p"], float(top_row["Champion"]), abs_tol=1e-9)
 
-    # Every slot distribution is sorted descending and sums to ≤ 1 (it is a probability over teams).
+    # Element 0 of each slot is the coherent lead (which may not be the global argmax), so the list
+    # as a whole need not be descending — but the tail is, and each slot stays a probability over
+    # teams (sums to ≤ 1). Probabilities themselves are never altered by the coherent projection.
     for rnd in b["rounds"]:
         for match in rnd["matches"]:
             for side in ("top", "bottom", "advance"):
                 ps = [d["p"] for d in match[side]]
-                assert ps == sorted(ps, reverse=True)
+                assert ps[1:] == sorted(ps[1:], reverse=True)
                 assert sum(ps) <= 1.0 + 1e-9
+
+
+def test_projection_has_no_duplicate_team_within_a_round():
+    # Issue-1 regression: a dominant team must not lead two slots of the same round (e.g. appear as
+    # both a group's winner and its runner-up in the Round of 32). The coherent projection forbids it.
+    wc = load_wc2026()
+    teams = [t for grp in wc["groups"].values() for t in grp]
+    sim = simulate.TournamentSimulator(StubPredictor(teams), wc, seed=0)
+    res = sim.run(n_sims=500, seed=2)
+    for rnd in res.bracket["rounds"]:
+        leaders = [
+            match[side][0]["team"]
+            for match in rnd["matches"]
+            for side in ("top", "bottom")
+            if match[side]
+        ]
+        assert len(leaders) == len(set(leaders)), f"duplicate slot leader in round {rnd['key']}"
+
+
+def test_advance_identity_holds_under_official_geometry():
+    # advance for match m reads the NEXT round's participant slot m — independent of which physical
+    # matches permute onto which rows. Hand-built occupancy with a known winner per Round-of-32 slot.
+    teams = [f"T{i}" for i in range(40)]
+    n = 1000
+    occ = _empty_occ(len(teams))
+    for m in range(16):
+        occ["R32"][2 * m, 2 * m] = n  # match m: top slot all T(2m)
+        occ["R32"][2 * m + 1, 2 * m + 1] = n  # bottom slot all T(2m+1)
+        occ["R16"][m, 2 * m] = n  # winner advancing into R16 slot m is the top team T(2m)
+    b = cb.build_bracket(occ, teams, n)
+    for m in range(16):
+        adv = b["rounds"][0]["matches"][m]["advance"]
+        assert adv == [{"team": f"T{2 * m}", "p": 1.0}]
