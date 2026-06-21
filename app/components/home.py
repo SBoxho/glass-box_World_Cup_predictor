@@ -237,15 +237,6 @@ _CARD_JS = """
     };
     tickCd(); setInterval(tickCd, 1000);
   }
-  var mins = document.getElementById("mins");
-  if (mins) {
-    var kick = new Date(mins.dataset.kick).getTime();
-    var tickMin = function () {
-      var m = Math.max(0, Math.floor((Date.now() - kick) / 60000));
-      mins.textContent = "~" + m + "′";
-    };
-    tickMin(); setInterval(tickMin, 1000);
-  }
 })();
 </script>
 """
@@ -300,7 +291,6 @@ def _scorers_html(fixture: dict) -> str:
 
 def _hero_live(fixture: dict, pred: dict | None, tz) -> None:
     """Hero for a match in progress (inferred live — no minute-by-minute feed)."""
-    ko = fx.kickoff_datetime(fixture)
     has_score = fixture.get("team1_score") is not None
     if has_score:  # a "recent" match the feed already scored, surfaced as the live headline
         center = (
@@ -308,9 +298,13 @@ def _hero_live(fixture: dict, pred: dict | None, tz) -> None:
             '<div class="sub">latest from the live feed</div>'
         )
     else:
+        # No score yet and no minute-by-minute feed (openfootball gives only kickoff + final
+        # scores). Rather than tick wall-clock minutes — which over-count the real game time (the
+        # 15-min half-time break, stoppages) and imply a precision we don't have — show a static
+        # "LIVE" label, matching the strips in :mod:`components.matchday`.
         center = (
-            f'<div class="clock live" id="mins" data-kick="{_esc(ko.isoformat())}">~0′</div>'
-            '<div class="sub">approx. elapsed · live score posts when the feed updates</div>'
+            '<div class="clock live">LIVE</div>'
+            '<div class="sub">live score posts when the feed updates</div>'
         )
     body = (
         '<div class="badge live"><span class="dot"></span>Live now</div>'
@@ -439,7 +433,7 @@ def render_action_cards() -> None:
         (
             "🎯",
             "Predict a Match",
-            "Any two teams, any venue — calibrated odds with a SHAP read.",
+            "Any two teams — calibrated odds with a SHAP read.",
             VIEW_PREDICT,
         ),
         (
@@ -483,17 +477,13 @@ def render_home(predictor, artifact, explainer, wc, state, snapshot) -> None:
     tz, tz_label = resolve_timezone()
     now = datetime.now(UTC)
 
-    head_l, head_r = st.columns([3, 1])
-    with head_l:
-        st.markdown("### ⚽ Matchday")
-        st.caption(
-            "Your live read on World Cup 2026 — calibrated model predictions, explained. "
-            "Probabilistic, not betting advice."
-        )
-    with head_r:
-        if st.button("↻ Refresh", width="stretch", help="Re-pull the live schedule feed"):
-            st.session_state["fixtures_nonce"] = st.session_state.get("fixtures_nonce", 0) + 1
-            st.rerun()
+    # The schedule auto-refreshes (see ``_live_heartbeat`` in streamlit_app); the freshness caption
+    # below reports the "as of" time, so there is no manual Refresh button.
+    st.markdown("### ⚽ Matchday")
+    st.caption(
+        "Your live read on World Cup 2026 — calibrated model predictions, explained. "
+        "Probabilistic, not betting advice."
+    )
 
     # One resolve of the full matchday picture drives both the hero and the strips below.
     fixtures_list = (snapshot or {}).get("fixtures") or []
