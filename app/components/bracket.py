@@ -79,10 +79,6 @@ _CSS = """
     border-radius: 11px; padding: 7px 9px; box-shadow: 0 6px 16px rgba(2,6,23,.35);
   }
   .slot { display: flex; align-items: center; gap: 7px; height: 21px; }
-  .slot .flag { font-size: 15px; width: 19px; text-align: center; flex: none; line-height: 1; }
-  .slot .code { font-size: 9.5px; font-weight: 800; width: 19px; text-align: center; flex: none;
-                color: #cbd5e1; background: rgba(148,163,184,.18); border-radius: 4px;
-                padding: 1px 0; }
   .slot .name { font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden;
                 text-overflow: ellipsis; flex: 1 1 auto; min-width: 0; }
   .slot .pct { font-size: 11.5px; font-weight: 800; color: #cbd5e1; flex: none;
@@ -92,7 +88,7 @@ _CSS = """
   .slot .sec { font-size: 9.5px; font-weight: 700; color: #64748b; margin-left: 4px;
                white-space: nowrap; }
   .slotlabel { font-size: 9px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase;
-               color: #475569; margin-left: 26px; line-height: 1.1; }
+               color: #475569; margin-left: 0; line-height: 1.1; }
   .mid { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
   .splitbar { flex: 1 1 auto; display: flex; height: 7px; border-radius: 999px; overflow: hidden;
               background: rgba(148,163,184,.16); }
@@ -173,17 +169,15 @@ def _esc(text) -> str:
     return html.escape(str(text)) if text is not None else ""
 
 
-def _flag_html(team: str) -> str:
-    emoji = flags.flag(team)
-    if emoji:
-        return f'<span class="flag">{emoji}</span>'
-    return f'<span class="code">{_esc(flags.code(team))}</span>'
-
-
 def _slot_html(slot_list: list, fav: bool, label: str | None) -> str:
-    """One participant slot: flag + (short) name + 'reach this slot' %, with a faint runner-up."""
+    """One participant slot: (short) name + 'reach this slot' %, with a faint runner-up.
+
+    No flag: emoji flags render as bare letters on Windows and a native page can't reliably show
+    real flag images, so the slot leads with the team name. A compact ISO ``code`` is still used for
+    the secondary runner-up so the faint annotation stays short.
+    """
     if not slot_list:
-        body = '<span class="flag">·</span><span class="name tbd">TBD</span>'
+        body = '<span class="name tbd">TBD</span>'
         return f'<div class="slot dim">{body}</div>'
     d0 = slot_list[0]
     team = d0["team"]
@@ -193,7 +187,6 @@ def _slot_html(slot_list: list, fav: bool, label: str | None) -> str:
         sec = f'<span class="sec">· {_esc(flags.code(d1["team"]))} {d1["p"] * 100:.0f}%</span>'
     cls = "slot fav" if fav else "slot dim"
     inner = (
-        f"{_flag_html(team)}"
         f'<span class="name" title="{_esc(team)}">{_esc(flags.short_name(team))}{sec}</span>'
         f'<span class="pct">{d0["p"] * 100:.0f}%</span>'
     )
@@ -317,7 +310,7 @@ def _champion_html(bracket: dict) -> str:
         )
         body = (
             '<div class="trophy">🏆</div>'
-            f'<div class="cname" title="{_esc(c0["team"])}">{_flag_html(c0["team"])} '
+            f'<div class="cname" title="{_esc(c0["team"])}">'
             f"{_esc(flags.short_name(c0['team']))}</div>"
             f'<div class="cwin">{c0["p"] * 100:.0f}% to lift the trophy</div>'
             f"{runner}"
@@ -343,9 +336,8 @@ def _column_html(rnd: dict, paths: dict, toss: dict | None, played: dict | None)
 
 
 def _chip(team: str) -> str:
-    """Inline 'flag + name' for a native-Streamlit highlight card."""
-    f = flags.flag(team)
-    return f"{f} {team}" if f else f"{flags.code(team)} · {team}"
+    """The team name for a native-Streamlit highlight card (no flag — see ``_slot_html``)."""
+    return team
 
 
 def render_highlights(highlights: dict) -> None:
