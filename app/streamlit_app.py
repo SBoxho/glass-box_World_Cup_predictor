@@ -9,6 +9,7 @@ Under the Hood.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -50,6 +51,36 @@ st.set_page_config(
 CLASS_COLORS = {"home": "#2563eb", "draw": "#9ca3af", "away": "#ef4444"}
 POS_COLOR = "#16a34a"
 NEG_COLOR = "#dc2626"
+
+# How often the live-data views silently re-pull the openfootball feed (seconds). This is the
+# cadence of the auto-refresh heartbeat *and* the cache TTL of the fetchers, so each scheduled
+# rerun lands on freshly-evictable data. The feed is not real-time, so 5 minutes is a polite,
+# practical balance; the client-side countdown clocks keep ticking every second regardless.
+LIVE_REFRESH_SECS = 300
+
+
+# --------------------------------------------------------------------------------------
+# Auto-refresh heartbeat
+# --------------------------------------------------------------------------------------
+@st.fragment(run_every=LIVE_REFRESH_SECS)
+def _live_heartbeat() -> None:
+    """Invisible heartbeat that re-pulls the live feed on a fixed cadence — no button needed.
+
+    Streamlit reruns *only this fragment* every ``LIVE_REFRESH_SECS``. Its first execution runs
+    inline with the normal top-to-bottom script pass and merely *primes* (it sets a flag and
+    returns); every later timer-driven rerun bumps the shared ``live_nonce`` and reruns the whole
+    app via ``st.rerun(scope="app")``, so the cached ``ttl`` fetchers re-pull and every view shows
+    the latest results.
+
+    ``main()`` resets ``_hb_primed`` to ``False`` at the start of every full run, so the inline
+    execution always primes (never reruns) and only genuine timer ticks fire the app-wide refresh.
+    That reset-then-prime handshake is what prevents an infinite rerun loop.
+    """
+    if not st.session_state.get("_hb_primed", False):
+        st.session_state["_hb_primed"] = True
+        return
+    st.session_state["live_nonce"] = st.session_state.get("live_nonce", 0) + 1
+    st.rerun(scope="app")
 
 
 # --------------------------------------------------------------------------------------
@@ -150,11 +181,12 @@ def get_simulator(_predictor, _wc, _fifa_rank, key: str):
     return simulate.TournamentSimulator(_predictor, _wc, fifa_rank=_fifa_rank or None)
 
 
-@st.cache_data(ttl=600, show_spinner="Fetching live World Cup results …")
+@st.cache_data(ttl=LIVE_REFRESH_SECS, show_spinner=False)
 def fetch_live(nonce: int):
-    """Pull played group results from the live feed. ``nonce`` is the cache key — the Refresh
-    button bumps it to force a real fetch; otherwise the last result is reused for 10 minutes.
-    Network calls only happen when this is called (the app never auto-fetches on load)."""
+    """Pull played group results from the live feed. ``nonce`` is the cache key — the auto-refresh
+    heartbeat bumps it every ``LIVE_REFRESH_SECS`` to force a real fetch; between ticks the same
+    nonce is reused, so a fetch only hits the network once per cadence (or once per first load).
+    Silent (no spinner) because it now runs automatically rather than on a button press."""
     return live.fetch_live_results()
 
 
@@ -188,35 +220,32 @@ def _played_pairs():
     return out
 
 
-@st.cache_data(ttl=600, show_spinner="Fetching the World Cup schedule …")
+@st.cache_data(ttl=LIVE_REFRESH_SECS, show_spinner=False)
 def fetch_fixtures(nonce: int):
-    """Pull the full live 2026 schedule (kickoffs, venues, scores) when the user hits Refresh.
+    """Pull the full live 2026 schedule (kickoffs, venues, scores) for the Matchday page.
 
-    Cached for 10 minutes (the Refresh button bumps ``nonce``). Degrades to the openfootball cache
-    (or an empty snapshot) offline; the caller falls back to the committed schedule if it comes back
-    empty, so the page always renders."""
+    Cached for ``LIVE_REFRESH_SECS`` (the auto-refresh heartbeat bumps ``nonce`` to force a fresh
+    pull each cadence). Degrades to the openfootball cache (or an empty snapshot) offline; the
+    caller falls back to the committed schedule if it comes back empty, so the page always renders.
+    Silent (no spinner) because it now runs automatically rather than on a button press."""
     return fixtures.fetch_fixtures()
 
 
 # --------------------------------------------------------------------------------------
 # Match prediction helpers
 # --------------------------------------------------------------------------------------
-def predict_ui(predictor, artifact, explainer, team_a, team_b, venue):
-    """Return (display_probs, explanation) for team_a vs team_b under the chosen venue."""
-    if venue == "Neutral venue":
-        home, away, neutral, is_host = team_a, team_b, True, 0
-    elif venue.startswith(team_a):
-        home, away, neutral, is_host = team_a, team_b, False, 1
-    else:
-        home, away, neutral, is_host = team_b, team_a, False, 1
+def predict_ui(predictor, artifact, explainer, team_a, team_b):
+    """Return (display_probs, explanation) for team_a vs team_b at a neutral venue.
 
-    feats = predictor.features(home, away, neutral=neutral, is_host_home=is_host)
-    probs = predict_from_features(artifact, feats, neutral=neutral)
-    if home == team_a:
-        display = {team_a: probs["H"], "Draw": probs["D"], team_b: probs["A"]}
-    else:
-        display = {team_a: probs["A"], "Draw": probs["D"], team_b: probs["H"]}
-    ex = explain.explain_match(artifact, feats, probs, home, away, explainer)
+    Every World Cup match is treated as neutral here (the format is effectively neutral-site, and
+    even host games are not consistently home), so there is no venue control. Neutral predictions
+    are mirror-symmetrized inside :func:`predict_from_features`, so the orientation is exact and the
+    home (``H``) / away (``A``) classes map directly onto team_a / team_b.
+    """
+    feats = predictor.features(team_a, team_b, neutral=True, is_host_home=0)
+    probs = predict_from_features(artifact, feats, neutral=True)
+    display = {team_a: probs["H"], "Draw": probs["D"], team_b: probs["A"]}
+    ex = explain.explain_match(artifact, feats, probs, team_a, team_b, explainer)
     return display, ex
 
 
@@ -375,28 +404,22 @@ def render_squad_panel(team_a: str, team_b: str, rosters: dict) -> None:
 def tab_predictor(predictor, artifact, explainer, wc, state, rosters):
     st.subheader("Match Predictor")
     st.caption(
-        "Pick two teams and a venue. The model returns calibrated win / draw / loss "
-        "probabilities, the SHAP contributions behind them, and a plain-English read."
+        "Pick two teams. The model returns calibrated win / draw / loss probabilities at a neutral "
+        "venue (the World Cup format), the SHAP contributions behind them, and a plain-English read."
     )
 
     teams = sorted({t for grp in wc["groups"].values() for t in grp})
-    c1, c2, c3 = st.columns([1, 1, 1])
+    c1, c2 = st.columns(2)
     with c1:
         team_a = st.selectbox("Team A", teams, index=teams.index("Brazil"))
     with c2:
         team_b = st.selectbox("Team B", teams, index=teams.index("France"))
-    with c3:
-        venue = st.radio(
-            "Venue",
-            ["Neutral venue", f"{team_a} at home", f"{team_b} at home"],
-            help="Most World Cup matches are neutral. Hosts (USA, Mexico, Canada) play at home.",
-        )
 
     if team_a == team_b:
         st.warning("Pick two different teams.")
         return
 
-    display, ex = predict_ui(predictor, artifact, explainer, team_a, team_b, venue)
+    display, ex = predict_ui(predictor, artifact, explainer, team_a, team_b)
 
     left, right = st.columns([1, 1])
     with left:
@@ -426,6 +449,18 @@ def tab_predictor(predictor, artifact, explainer, wc, state, rosters):
     if rosters:
         st.divider()
         render_squad_panel(team_a, team_b, rosters)
+
+
+def _results_fingerprint(locked: list[dict]) -> str:
+    """Stable content hash of the locked group results.
+
+    Used as the standings part of the simulator cache key and to decide when a cached simulation
+    is stale. It folds in *only* the scores (home/away teams + goals), not the fetch timestamp, so
+    an auto-refresh that re-pulls identical results does **not** needlessly rebuild the simulator or
+    discard the user's current run — those only change when a scoreline actually changes.
+    """
+    payload = sorted((r["home"], r["away"], r["home_score"], r["away_score"]) for r in locked)
+    return hashlib.md5(json.dumps(payload).encode()).hexdigest()  # noqa: S324 (non-crypto cache key)
 
 
 def _effective_results(wc: dict, snapshot: dict | None):
@@ -487,20 +522,19 @@ def tab_simulator(predictor, artifact, wc):
     )
 
     # --- Live results: lock already-played group matches so the sim runs forward ---------------
-    lc1, lc2 = st.columns([1, 3])
-    with lc1:
-        if st.button(
-            "🔄 Refresh live results",
-            width="stretch",
-            help="Fetch played group matches from the openfootball feed (CC0) and lock them in.",
-        ):
-            st.session_state["live_nonce"] = st.session_state.get("live_nonce", 0) + 1
-            st.session_state["live_snapshot"] = fetch_live(st.session_state["live_nonce"])
-            st.session_state.pop("sim_result", None)  # standings changed → old run is stale
-    snapshot = st.session_state.get("live_snapshot")
+    # Pulled automatically (cached, refreshed by the heartbeat) — no button. The committed/empty
+    # fallbacks inside the fetcher keep this offline-safe.
+    nonce = st.session_state.get("live_nonce", 0)
+    snapshot = fetch_live(nonce)
     wc_eff, locked, fetched_at, source = _effective_results(wc, snapshot)
-    with lc2:
-        _render_live_status(snapshot, locked, fetched_at, source)
+    _render_live_status(snapshot, locked, fetched_at, source)
+
+    # Drop a cached run only when the standings actually change (not on every silent refresh), so an
+    # auto-refresh that re-pulls identical results leaves the user's current simulation in place.
+    fingerprint = _results_fingerprint(locked)
+    if st.session_state.get("sim_fingerprint") != fingerprint:
+        st.session_state.pop("sim_result", None)
+        st.session_state["sim_fingerprint"] = fingerprint
 
     # --- Simulation controls -------------------------------------------------------------------
     c1, c2, c3 = st.columns([2, 1, 1])
@@ -518,7 +552,7 @@ def tab_simulator(predictor, artifact, wc):
         predictor,
         wc_eff,
         fifa_rank,
-        f"{artifact.trained_through}|{len(locked)}|{fetched_at}|fifa{len(fifa_rank)}",
+        f"{artifact.trained_through}|{fingerprint}|fifa{len(fifa_rank)}",
     )
 
     if run:
@@ -612,10 +646,11 @@ def tab_my_team(predictor, artifact, explainer, wc, state):
     team page reflects current standings. Prefers an existing full run if the user already
     simulated; otherwise auto-runs a default once (cached).
     """
-    snapshot = st.session_state.get("live_snapshot")
+    nonce = st.session_state.get("live_nonce", 0)
+    snapshot = fetch_live(nonce)
     wc_eff, locked, fetched_at, source = _effective_results(wc, snapshot)
     fifa_rank = load_fifa_positions()
-    key = f"{artifact.trained_through}|{len(locked)}|{fetched_at}|fifa{len(fifa_rank)}"
+    key = f"{artifact.trained_through}|{_results_fingerprint(locked)}|fifa{len(fifa_rank)}"
     sim = get_simulator(predictor, wc_eff, fifa_rank, key)
     result = st.session_state.get("sim_result")
     if result is None:
@@ -859,16 +894,21 @@ def main():
     nav = st.segmented_control("Navigation", views, key=home.NAV_KEY, label_visibility="collapsed")
     view = nav or home.VIEW_MATCHDAY  # single-select can be cleared to None → fall back to Home
 
+    # Auto-refresh: re-prime the heartbeat on every full run, then mount it only on the live-data
+    # views (Matchday / Simulate / My Team) so Predict / Under-the-Hood don't rerun on the timer.
+    st.session_state["_hb_primed"] = False
+    if view in (home.VIEW_MATCHDAY, home.VIEW_SIMULATE, home.VIEW_TEAM):
+        _live_heartbeat()
+
     if view == home.VIEW_MATCHDAY:
-        # Default: the committed schedule + cached results (offline-safe). Only once the user has
-        # pressed Refresh do we pull the live feed — falling back to the committed schedule if the
-        # feed is unreachable, so the page never loses its floor.
-        nonce = st.session_state.get("fixtures_nonce", 0)
+        # Always overlay the live schedule (auto-refreshed by the heartbeat), falling back to the
+        # committed offline schedule whenever the feed is empty or unreachable, so the page never
+        # loses its floor. The shared ``live_nonce`` keys the cached fetch.
+        nonce = st.session_state.get("live_nonce", 0)
         snapshot = resolve_schedule()
-        if nonce > 0:
-            live_snapshot = fetch_fixtures(nonce)
-            if live_snapshot.get("fixtures"):
-                snapshot = live_snapshot
+        live_snapshot = fetch_fixtures(nonce)
+        if live_snapshot.get("fixtures"):
+            snapshot = live_snapshot
         home.render_home(predictor, artifact, explainer, wc, state, snapshot)
     else:
         st.caption(
