@@ -24,7 +24,7 @@ import streamlit as st
 
 from components import bracket as bracket_view
 from components import home as home_view
-from core import explain, flags
+from core import explain
 from core import team_page as tp
 from core.model import predict_from_features
 
@@ -93,7 +93,6 @@ def predict_for_team(predictor, artifact, explainer, wc, fixture: dict, team: st
 # Hero
 # --------------------------------------------------------------------------------------
 def _hero(team, group, elo, elo_rank, n, champ_p, fav_p, host) -> None:
-    flag = flags.flag(team) or ""
     host_badge = (
         f' · <span style="color:#fbbf24">🏠 Host — plays Group {host["group"]} at home</span>'
         if host
@@ -117,7 +116,7 @@ def _hero(team, group, elo, elo_rank, n, champ_p, fav_p, host) -> None:
         'box-shadow:0 12px 32px rgba(2,6,23,.45)">'
         '<div style="font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;'
         f'color:#7dd3fc">FIFA World Cup 2026 · Group {_esc(group)}</div>'
-        f'<div style="font-size:38px;font-weight:800;line-height:1.1;margin-top:4px">{flag} '
+        f'<div style="font-size:38px;font-weight:800;line-height:1.1;margin-top:4px">'
         f"{_esc(team)}</div>"
         f'<div style="margin-top:6px;color:#94a3b8;font-size:14px;font-weight:600">Elo {elo:.0f} · '
         f"#{elo_rank} of {n} by rating{host_badge}</div>"
@@ -366,11 +365,13 @@ def render_team_page(
     teams = sorted(tp.wc_teams(wc))
     default = "Brazil" if "Brazil" in teams else teams[0]
     st.session_state.setdefault(SESSION_KEY, default)
+    # Plain country names (no flag): emoji flags render as bare letters on Windows ("BR Brazil")
+    # and as a generic black flag for England/Scotland, and a native selectbox can't show real
+    # flag images — so we match the Match Predictor and show the name alone.
     st.selectbox(
         "Your team",
         teams,
         key=SESSION_KEY,
-        format_func=lambda t: f"{flags.flag(t)} {t}".strip(),
     )
     team = st.session_state[SESSION_KEY]
 
