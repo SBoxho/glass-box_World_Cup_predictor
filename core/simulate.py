@@ -157,6 +157,9 @@ class SimulationResult:
     # Per-slot bracket projection (see :mod:`core.bracket`): for every knockout position, which
     # teams are likely to fill it and who advances. ``None`` only if bracket tracking was disabled.
     bracket: dict | None = None
+    # One row per team: its group + probability of finishing 1st/2nd/3rd/4th in the group and of
+    # advancing to the Round of 32. ``None`` only if group-placement tracking was disabled.
+    group_table: pd.DataFrame | None = None
 
 
 class TournamentSimulator:
@@ -310,8 +313,10 @@ class TournamentSimulator:
         (M73→M104) once, resolving each slot token to a team and sampling the knockout result.
         """
         winners, runners, thirds = {}, {}, []
+        group_order: dict[str, list[str]] = {}
         for g in self.groups:
             standings = self._play_group(g)
+            group_order[g] = [s["team"] for s in standings]  # 1st .. 4th, for group-finish stats
             winners[g] = standings[0]["team"]
             runners[g] = standings[1]["team"]
             thirds.append(standings[2])
@@ -368,6 +373,8 @@ class TournamentSimulator:
         self._last_winner_team = winner_team
         self._last_r32_pairs = [participants[mid] for mid in rows["R32"]]
         self._last_final = tuple(sorted(participants[self.spec.final_id]))
+        self._last_group_order = group_order  # {group: [1st, 2nd, 3rd, 4th]} for group-finish stats
+        self._last_best_thirds = [t["team"] for t in best_thirds]
         return reached
 
     # -- aggregate ------------------------------------------------------------------
@@ -381,6 +388,7 @@ class TournamentSimulator:
             self.rng = np.random.default_rng(seed)
         n = len(self.teams)
         counts = {s: np.zeros(n) for s in STAGES}
+        place = np.zeros((n, 4))  # place[team, rank] — group finish 1st..4th
         final_pairs: dict[tuple, int] = {}
 
         # Per-position occupancy: occ[round][slot, team] counts how many tournaments put each team in
@@ -398,6 +406,9 @@ class TournamentSimulator:
             for s in STAGES:
                 for t in reached[s]:
                     counts[s][self.idx[t]] += 1
+            for order in self._last_group_order.values():
+                for rank, t in enumerate(order):
+                    place[self.idx[t], rank] += 1
             parts = self._last_participants
             wt = self._last_winner_team
             # Round-of-32 participants, in bracket participant-slot order.
@@ -418,6 +429,19 @@ class TournamentSimulator:
             table[s] = counts[s] / n_sims
         table = table.sort_values("Champion", ascending=False).reset_index(drop=True)
 
+        group_table = pd.DataFrame(
+            {"team": self.teams, "group": [self.group_of[t] for t in self.teams]}
+        )
+        for r in range(4):
+            group_table[f"p{r + 1}"] = place[:, r] / n_sims
+        group_table["p_advance"] = counts["R32"] / n_sims
+        group_table = group_table.sort_values(["group", "p1"], ascending=[True, False]).reset_index(
+            drop=True
+        )
+
+        # Full final-pairing distribution (sorted team tuple -> count); the app reads only the mode,
+        # but the simulate-to-JSON script reports the top matchups, so stash it on the simulator.
+        self._last_final_pairs = final_pairs
         best_final = max(final_pairs.items(), key=lambda kv: kv[1])
         return SimulationResult(
             table=table,
@@ -425,4 +449,5 @@ class TournamentSimulator:
             most_likely_final_prob=best_final[1] / n_sims,
             n_sims=n_sims,
             bracket=bracket_mod.build_bracket(occ, self.teams, n_sims, self._r32_tokens),
+            group_table=group_table,
         )
