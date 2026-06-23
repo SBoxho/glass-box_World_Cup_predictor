@@ -435,9 +435,9 @@ class TournamentSimulator:
         for r in range(4):
             group_table[f"p{r + 1}"] = place[:, r] / n_sims
         group_table["p_advance"] = counts["R32"] / n_sims
-        group_table = group_table.sort_values(
-            ["group", "p1"], ascending=[True, False]
-        ).reset_index(drop=True)
+        group_table = group_table.sort_values(["group", "p1"], ascending=[True, False]).reset_index(
+            drop=True
+        )
 
         # Full final-pairing distribution (sorted team tuple -> count); the app reads only the mode,
         # but the simulate-to-JSON script reports the top matchups, so stash it on the simulator.

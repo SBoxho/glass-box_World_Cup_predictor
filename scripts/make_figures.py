@@ -92,13 +92,27 @@ def fig_champion_odds(d: dict, top: int = 16) -> None:
     fig, ax = plt.subplots(figsize=(9, 7.6))
     bars = ax.barh(names, vals, color=colors, height=0.74)
     for bar, v in zip(bars, vals, strict=True):
-        ax.text(v + pmax * 0.012, bar.get_y() + bar.get_height() / 2, f"{v:.1f}%",
-                va="center", ha="left", fontsize=10.5, color=INK, fontweight="bold")
+        ax.text(
+            v + pmax * 0.012,
+            bar.get_y() + bar.get_height() / 2,
+            f"{v:.1f}%",
+            va="center",
+            ha="left",
+            fontsize=10.5,
+            color=INK,
+            fontweight="bold",
+        )
     ax.set_xlim(0, pmax * 1.12)
     ax.set_xlabel("Probability of winning the tournament (%)", fontsize=11)
     ax.set_title("Who wins World Cup 2026?", fontsize=18, fontweight="bold", loc="left", pad=22)
-    ax.annotate(_subtitle(d), (0, 1.012), xycoords="axes fraction", fontsize=9.5,
-                color=MUTE, annotation_clip=False)
+    ax.annotate(
+        _subtitle(d),
+        (0, 1.012),
+        xycoords="axes fraction",
+        fontsize=9.5,
+        color=MUTE,
+        annotation_clip=False,
+    )
     ax.spines[["top", "right"]].set_visible(False)
     ax.tick_params(length=0)
     ax.set_axisbelow(True)
@@ -114,14 +128,24 @@ def fig_group_stage(d: dict) -> None:
     standings = d.get("current_standings", {})
     order = sorted(groups)
     fig, axes = plt.subplots(3, 4, figsize=(15.5, 10.2))
-    fig.suptitle("Group stage — who reaches the knockouts?", fontsize=19, fontweight="bold",
-                 x=0.07, ha="left", y=0.995)
-    fig.text(0.07, 0.965, _subtitle(d) + "  ·  green = projected to advance (top-2 or best-third)",
-             fontsize=10, color=MUTE, ha="left")
+    fig.suptitle(
+        "Group stage — who reaches the knockouts?",
+        fontsize=19,
+        fontweight="bold",
+        x=0.07,
+        ha="left",
+        y=0.995,
+    )
+    fig.text(
+        0.07,
+        0.965,
+        _subtitle(d) + "  ·  green = projected to advance (top-2 or best-third)",
+        fontsize=10,
+        color=MUTE,
+        ha="left",
+    )
 
-    pts_by_team = {
-        s["team"]: s for g in standings for s in standings.get(g, [])
-    }
+    pts_by_team = {s["team"]: s for g in standings for s in standings.get(g, [])}
     for ax, g in zip(axes.ravel(), order, strict=False):
         teams = sorted(groups[g]["teams"], key=lambda t: t["p_advance"])
         names = [flags.short_name(t["team"]) for t in teams]
@@ -133,8 +157,16 @@ def fig_group_stage(d: dict) -> None:
             tag = f"{v:.0f}%"
             if played:
                 tag += f"  ·  {pts_by_team[t['team']]['pts']}pt"
-            ax.text(2, bar.get_y() + bar.get_height() / 2, tag, va="center", ha="left",
-                    fontsize=9, color=INK if v >= 50 else MUTE, fontweight="bold")
+            ax.text(
+                2,
+                bar.get_y() + bar.get_height() / 2,
+                tag,
+                va="center",
+                ha="left",
+                fontsize=9,
+                color=INK if v >= 50 else MUTE,
+                fontweight="bold",
+            )
         ax.set_xlim(0, 100)
         ax.set_title(f"Group {g}", fontsize=12.5, fontweight="bold", loc="left")
         ax.set_xticks([])
@@ -151,26 +183,52 @@ def fig_group_stage(d: dict) -> None:
 def _box(ax, x, y, team, p, *, w=2.9, h=0.64, champ=False, lead=False):
     face = GOLD if champ else ("#eff6ff" if lead else "#f8fafc")
     edge = GOLD if champ else (BLUE if lead else FAINT)
-    ax.add_patch(FancyBboxPatch((x, y - h / 2), w, h, boxstyle="round,pad=0.02,rounding_size=0.08",
-                                linewidth=1.7 if (champ or lead) else 1.0, edgecolor=edge,
-                                facecolor=face, mutation_aspect=1))
+    ax.add_patch(
+        FancyBboxPatch(
+            (x, y - h / 2),
+            w,
+            h,
+            boxstyle="round,pad=0.02,rounding_size=0.08",
+            linewidth=1.7 if (champ or lead) else 1.0,
+            edgecolor=edge,
+            facecolor=face,
+            mutation_aspect=1,
+        )
+    )
     fs = 11 if champ else 10
-    ax.text(x + 0.14, y, f"{flags.short_name(team)}", va="center", ha="left",
-            fontsize=fs, fontweight="bold", color=INK)
-    ax.text(x + w - 0.12, y, f"{p * 100:.0f}%", va="center", ha="right", fontsize=9.5,
-            color="#7c2d12" if champ else MUTE, fontweight="bold")
+    ax.text(
+        x + 0.14,
+        y,
+        f"{flags.short_name(team)}",
+        va="center",
+        ha="left",
+        fontsize=fs,
+        fontweight="bold",
+        color=INK,
+    )
+    ax.text(
+        x + w - 0.12,
+        y,
+        f"{p * 100:.0f}%",
+        va="center",
+        ha="right",
+        fontsize=9.5,
+        color="#7c2d12" if champ else MUTE,
+        fontweight="bold",
+    )
 
 
 def _elbow(ax, x0, y0, x1, y1, color=FAINT, lw=1.2):
     xm = (x0 + x1) / 2
-    ax.plot([x0, xm, xm, x1], [y0, y0, y1, y1], color=color, lw=lw, zorder=0,
-            solid_capstyle="round")
+    ax.plot(
+        [x0, xm, xm, x1], [y0, y0, y1, y1], color=color, lw=lw, zorder=0, solid_capstyle="round"
+    )
 
 
 def fig_bracket(d: dict) -> None:
     rounds = {r["key"]: r for r in d["bracket"]["rounds"]}
-    qf = rounds["QF"]["matches"]      # 4 matches
-    sf = rounds["SF"]["matches"]      # 2 matches
+    qf = rounds["QF"]["matches"]  # 4 matches
+    sf = rounds["SF"]["matches"]  # 2 matches
     final = rounds["Final"]["matches"][0]
     champ = d["bracket"]["champion"][0]
     champ_team = champ["team"]
@@ -198,35 +256,64 @@ def fig_bracket(d: dict) -> None:
     for mi, (cy, m) in enumerate(zip(sf_centers, sf, strict=True)):
         for side, dy, feeder in (("top", DY2, 2 * mi), ("bottom", -DY2, 2 * mi + 1)):
             s = slot(m, side)
-            _elbow(ax, x_qf + W, qf_centers[feeder], x_sf, cy + dy,
-                   color=GOLD if s["team"] == champ_team else FAINT,
-                   lw=1.7 if s["team"] == champ_team else 1.1)
+            _elbow(
+                ax,
+                x_qf + W,
+                qf_centers[feeder],
+                x_sf,
+                cy + dy,
+                color=GOLD if s["team"] == champ_team else FAINT,
+                lw=1.7 if s["team"] == champ_team else 1.1,
+            )
             _box(ax, x_sf, cy + dy, s["team"], s["p"], w=W, lead=(s["team"] == champ_team))
 
     # Final: 2 boxes (SF advancers).
     fn_center = sum(sf_centers) / 2
     for side, dy, feeder in (("top", DY2, 0), ("bottom", -DY2, 1)):
         s = slot(final, side)
-        _elbow(ax, x_sf + W, sf_centers[feeder], x_fn, fn_center + dy,
-               color=GOLD if s["team"] == champ_team else FAINT,
-               lw=1.7 if s["team"] == champ_team else 1.1)
+        _elbow(
+            ax,
+            x_sf + W,
+            sf_centers[feeder],
+            x_fn,
+            fn_center + dy,
+            color=GOLD if s["team"] == champ_team else FAINT,
+            lw=1.7 if s["team"] == champ_team else 1.1,
+        )
         _box(ax, x_fn, fn_center + dy, s["team"], s["p"], w=W, lead=(s["team"] == champ_team))
 
     # Champion.
     _elbow(ax, x_fn + W, fn_center, x_ch, fn_center, color=GOLD, lw=1.7)
     _box(ax, x_ch, fn_center, champ_team, champ["p"], w=3.1, h=0.82, champ=True)
-    ax.text(x_ch + 1.55, fn_center + 0.68, "★ CHAMPION", ha="center", fontsize=10.5,
-            color=GOLD, fontweight="bold")
+    ax.text(
+        x_ch + 1.55,
+        fn_center + 0.68,
+        "★ CHAMPION",
+        ha="center",
+        fontsize=10.5,
+        color=GOLD,
+        fontweight="bold",
+    )
 
-    for x, w, lab in ((x_qf, W, "Quarter-finals"), (x_sf, W, "Semi-finals"),
-                      (x_fn, W, "Final"), (x_ch, 3.1, "Winner")):
+    for x, w, lab in (
+        (x_qf, W, "Quarter-finals"),
+        (x_sf, W, "Semi-finals"),
+        (x_fn, W, "Final"),
+        (x_ch, 3.1, "Winner"),
+    ):
         ax.text(x + w / 2, 9.95, lab, ha="center", fontsize=11.5, fontweight="bold", color=MUTE)
 
     fig.suptitle("Road to the Final", fontsize=20, fontweight="bold", x=0.07, ha="left", y=0.99)
     fig.text(0.07, 0.95, _subtitle(d), fontsize=9.5, color=MUTE, ha="left")
-    fig.text(0.07, 0.03, "Most-likely team in each knockout slot, with its probability of reaching "
-             "that slot across all simulations. Gold traces the projected champion's road.",
-             fontsize=9, color=MUTE, ha="left")
+    fig.text(
+        0.07,
+        0.03,
+        "Most-likely team in each knockout slot, with its probability of reaching "
+        "that slot across all simulations. Gold traces the projected champion's road.",
+        fontsize=9,
+        color=MUTE,
+        ha="left",
+    )
     fig.subplots_adjust(left=0.02, right=0.99, top=0.92, bottom=0.06)
     _save(fig, "road_to_final")
 
@@ -248,10 +335,21 @@ def fig_surprises(d: dict) -> None:
     ax.set_yticks(list(y))
     ax.set_yticklabels(names, fontsize=10.5)
     ax.set_xlabel("Probability (%)", fontsize=11)
-    ax.set_title("The overachievers — deep runs from outside the top 8", fontsize=16,
-                 fontweight="bold", loc="left", pad=22)
-    ax.annotate(_subtitle(d), (0, 1.012), xycoords="axes fraction", fontsize=9.5, color=MUTE,
-                annotation_clip=False)
+    ax.set_title(
+        "The overachievers — deep runs from outside the top 8",
+        fontsize=16,
+        fontweight="bold",
+        loc="left",
+        pad=22,
+    )
+    ax.annotate(
+        _subtitle(d),
+        (0, 1.012),
+        xycoords="axes fraction",
+        fontsize=9.5,
+        color=MUTE,
+        annotation_clip=False,
+    )
     ax.legend(loc="lower right", frameon=False, fontsize=10)
     ax.spines[["top", "right"]].set_visible(False)
     ax.tick_params(length=0)
@@ -262,7 +360,9 @@ def fig_surprises(d: dict) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Render article figures from a simulate_full JSON.")
-    ap.add_argument("--in", dest="inp", type=Path, default=config.BASE_DIR / "reports" / "sim_1M.json")
+    ap.add_argument(
+        "--in", dest="inp", type=Path, default=config.BASE_DIR / "reports" / "sim_1M.json"
+    )
     args = ap.parse_args()
     inp = args.inp if args.inp.is_absolute() else (config.BASE_DIR / args.inp)
     d = _load(inp)

@@ -264,11 +264,21 @@ def build_report(sim, predictor, wc, fifa_pos, meta, result, elapsed: float) -> 
                 for r in underdogs
             ],
             "overperformers": [
-                {"team": r["team"], "elo_rank": r["elo_rank"], "sim_overperformance": r["overperformance"], "p_SF": r["p_SF"]}
+                {
+                    "team": r["team"],
+                    "elo_rank": r["elo_rank"],
+                    "sim_overperformance": r["overperformance"],
+                    "p_SF": r["p_SF"],
+                }
                 for r in overperformers
             ],
             "underperformers": [
-                {"team": r["team"], "elo_rank": r["elo_rank"], "sim_overperformance": r["overperformance"], "p_advance": r["p_advance"]}
+                {
+                    "team": r["team"],
+                    "elo_rank": r["elo_rank"],
+                    "sim_overperformance": r["overperformance"],
+                    "p_advance": r["p_advance"],
+                }
                 for r in underperformers
             ],
             "group_winner_upsets": group_upsets,
@@ -291,7 +301,9 @@ def _print_summary(report: dict) -> None:
         print(f"  {r['team']:<16} {r['p_champion']:6.2%}  (Elo #{r['elo_rank']})")
     print("\nUnderdog deep runs (outside Elo top 8, by P(semis)):")
     for r in report["surprises"]["underdog_deep_runs"][:6]:
-        print(f"  {r['team']:<16} SF {r['p_SF']:5.1%} · QF {r['p_QF']:5.1%} · title {r['p_champion']:4.1%}  (Elo #{r['elo_rank']})")
+        print(
+            f"  {r['team']:<16} SF {r['p_SF']:5.1%} · QF {r['p_QF']:5.1%} · title {r['p_champion']:4.1%}  (Elo #{r['elo_rank']})"
+        )
     if report["surprises"]["group_winner_upsets"]:
         print("\nProjected group-winner upsets (not the Elo favourite):")
         for u in report["surprises"]["group_winner_upsets"]:
@@ -300,7 +312,9 @@ def _print_summary(report: dict) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Full tournament Monte-Carlo to a clean JSON report.")
-    ap.add_argument("--sims", type=int, default=1_000_000, help="number of tournaments (default 1e6)")
+    ap.add_argument(
+        "--sims", type=int, default=1_000_000, help="number of tournaments (default 1e6)"
+    )
     ap.add_argument("--seed", type=int, default=config.SEED, help="RNG seed (reproducible)")
     ap.add_argument("--no-live", action="store_true", help="ignore played results (pre-tournament)")
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT, help="output JSON path")
