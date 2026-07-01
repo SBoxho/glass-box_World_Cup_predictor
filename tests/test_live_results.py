@@ -174,11 +174,21 @@ def test_parse_openfootball_knockout_ft_et_pens_and_skips():
     data = {
         "matches": [
             # Group match -> excluded (knockouts only here; groups go through the other parser).
-            {"group": "Group A", "team1": "Mexico", "team2": "South Africa", "score": {"ft": [2, 0]}},
+            {
+                "group": "Group A",
+                "team1": "Mexico",
+                "team2": "South Africa",
+                "score": {"ft": [2, 0]},
+            },
             # Decided in regulation.
             {"round": "Round of 32", "team1": "Brazil", "team2": "Japan", "score": {"ft": [2, 1]}},
             # Level at full time, decided in extra time.
-            {"round": "Round of 32", "team1": "Spain", "team2": "Italy", "score": {"ft": [1, 1], "et": [2, 1]}},
+            {
+                "round": "Round of 32",
+                "team1": "Spain",
+                "team2": "Italy",
+                "score": {"ft": [1, 1], "et": [2, 1]},
+            },
             # Level through ET, decided on penalties -> winner from the shootout (real 2026 tie).
             {
                 "round": "Round of 32",
@@ -208,11 +218,25 @@ def test_parse_openfootball_knockout_ft_et_pens_and_skips():
 def test_merge_known_ko_results_overrides_and_no_mutation():
     wc = {
         "known_ko_results": [
-            {"home": "A", "away": "B", "home_score": 1, "away_score": 1, "winner": "A", "decided_by": "ft"}
+            {
+                "home": "A",
+                "away": "B",
+                "home_score": 1,
+                "away_score": 1,
+                "winner": "A",
+                "decided_by": "ft",
+            }
         ]
     }
     live_ko = [  # same pair, reversed orientation, live flips the winner
-        {"home": "B", "away": "A", "home_score": 0, "away_score": 0, "winner": "B", "decided_by": "pen"}
+        {
+            "home": "B",
+            "away": "A",
+            "home_score": 0,
+            "away_score": 0,
+            "winner": "B",
+            "decided_by": "pen",
+        }
     ]
     merged = live.merge_known_ko_results(wc, live_ko)
     assert merged["known_ko_results"] == live_ko  # one entry per unordered pair, live wins
@@ -245,13 +269,24 @@ def test_ko_result_honored_by_simulator():
     underdog = a if stub.strength[a] < stub.strength[b] else b  # the side the model rates weaker
     favorite = b if underdog == a else a
 
-    ko = [{"home": a, "away": b, "home_score": 0, "away_score": 0, "winner": underdog, "decided_by": "pen"}]
+    ko = [
+        {
+            "home": a,
+            "away": b,
+            "home_score": 0,
+            "away_score": 0,
+            "winner": underdog,
+            "decided_by": "pen",
+        }
+    ]
     wc_ko = live.merge_known_ko_results(wc_g, ko)
     res = simulate.TournamentSimulator(stub, wc_ko, seed=0, fifa_rank=fifa).run(n_sims=200, seed=0)
     r16 = res.table.set_index("team")["R16"]
 
     assert r16[underdog] == 1.0  # forced winner always advances out of the R32
-    assert r16[favorite] == 0.0  # forced loser never reaches the R16, model strength notwithstanding
+    assert (
+        r16[favorite] == 0.0
+    )  # forced loser never reaches the R16, model strength notwithstanding
 
 
 def test_eliminated_team_never_advances_under_varying_bracket():
@@ -273,7 +308,16 @@ def test_eliminated_team_never_advances_under_varying_bracket():
 
     # Record X as having lost a knockout tie (opponent from another group) -> X is eliminated.
     opponent = wc["groups"]["B"][0]
-    ko = [{"home": x, "away": opponent, "home_score": 1, "away_score": 1, "winner": opponent, "decided_by": "pen"}]
+    ko = [
+        {
+            "home": x,
+            "away": opponent,
+            "home_score": 1,
+            "away_score": 1,
+            "winner": opponent,
+            "decided_by": "pen",
+        }
+    ]
     wc_ko = live.merge_known_ko_results(wc_g, ko)
 
     res = simulate.TournamentSimulator(stub, wc_ko, seed=0, fifa_rank=None).run(n_sims=300, seed=0)

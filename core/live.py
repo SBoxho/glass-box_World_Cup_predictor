@@ -95,7 +95,12 @@ def _score_pair(score: dict, keys: tuple[str, ...]) -> tuple[int, int] | None:
     """Return ``(team1, team2)`` goals for the first present, fully-scored key in ``keys``, else None."""
     for k in keys:
         pair = (score or {}).get(k)
-        if isinstance(pair, (list, tuple)) and len(pair) == 2 and pair[0] is not None and pair[1] is not None:
+        if (
+            isinstance(pair, (list, tuple))
+            and len(pair) == 2
+            and pair[0] is not None
+            and pair[1] is not None
+        ):
             return int(pair[0]), int(pair[1])
     return None
 

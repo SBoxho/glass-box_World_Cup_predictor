@@ -483,7 +483,11 @@ def _effective_results(wc: dict, snapshot: dict | None):
     committed = wc.get("known_results", [])
     if live_results:
         wc_eff = live.merge_known_results(wc, live_results)
-        locked, fetched_at, source = wc_eff["known_results"], snapshot.get("fetched_at"), snapshot.get("source")
+        locked, fetched_at, source = (
+            wc_eff["known_results"],
+            snapshot.get("fetched_at"),
+            snapshot.get("source"),
+        )
     elif committed:
         wc_eff, locked = wc, committed
         fetched_at, source = wc.get("known_results_as_of"), "data/wc2026.json (committed)"
@@ -696,7 +700,9 @@ def tab_my_team(predictor, artifact, explainer, wc, state):
     snapshot = fetch_live(nonce)
     wc_eff, locked, ko_locked, fetched_at, source = _effective_results(wc, snapshot)
     fifa_rank = load_fifa_positions()
-    key = f"{artifact.trained_through}|{_results_fingerprint(locked, ko_locked)}|fifa{len(fifa_rank)}"
+    key = (
+        f"{artifact.trained_through}|{_results_fingerprint(locked, ko_locked)}|fifa{len(fifa_rank)}"
+    )
     sim = get_simulator(predictor, wc_eff, fifa_rank, key)
     result = st.session_state.get("sim_result")
     if result is None:
