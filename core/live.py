@@ -15,9 +15,11 @@ Design notes (kept deliberately strict so the rest of the project's guarantees h
 * **Cached + optional.** Each successful fetch is written to a gitignored cache snapshot. If the
   network is unavailable, the last cached snapshot is returned; if there is none, an empty snapshot
   is returned. The app therefore always works offline (it just won't have fresh results).
-* **Group stage only.** Only played *group* matches are locked. Knockout results are intentionally
-  not locked: the simulator re-draws the entire bracket from group standings, so a fixed knockout
-  result has no slot to live in yet (a possible future enhancement).
+* **Group and knockout.** Played *group* matches are locked as scores; played *knockout* matches are
+  locked as a **winner** (a knockout can be decided in extra time or a penalty shootout, so the
+  full-time score alone can't say who advanced). The simulator honors both — see
+  :func:`parse_openfootball_matches` / :func:`parse_openfootball_knockout` and
+  :class:`core.simulate.TournamentSimulator`.
 
 Source: ``openfootball/worldcup.json`` (CC0 / public domain, no API key). See ``DATA_SOURCES.md``.
 """
@@ -79,11 +81,82 @@ def parse_openfootball_matches(data: dict) -> list[dict]:
     return out
 
 
+# Knockout deciding stages, most decisive first: a penalty shootout beats extra time beats
+# regulation. openfootball uses ``score.p`` for the shootout and ``score.et`` for extra time (both
+# oriented ``[team1, team2]`` like ``ft``); the aliases keep the read liberal across feed vintages.
+_KO_STAGES = (
+    ("pen", ("p", "pen", "penalties")),
+    ("et", ("et",)),
+    ("ft", ("ft",)),
+)
+
+
+def _score_pair(score: dict, keys: tuple[str, ...]) -> tuple[int, int] | None:
+    """Return ``(team1, team2)`` goals for the first present, fully-scored key in ``keys``, else None."""
+    for k in keys:
+        pair = (score or {}).get(k)
+        if isinstance(pair, (list, tuple)) and len(pair) == 2 and pair[0] is not None and pair[1] is not None:
+            return int(pair[0]), int(pair[1])
+    return None
+
+
+def parse_openfootball_knockout(data: dict) -> list[dict]:
+    """Extract played *knockout* results from an openfootball ``worldcup.json`` payload.
+
+    Returns ``{home, away, home_score, away_score, winner, decided_by}`` dicts. A knockout tie can go
+    to extra time or penalties, so the *winner* — not the score — is what the simulator locks. The
+    deciding stage is the most decisive one present (:data:`_KO_STAGES`): penalties → extra time →
+    full time; the first stage with a non-level score names the winner. ``home_score``/``away_score``
+    are the full-time goals (for display); ``decided_by`` is ``"pen"``/``"et"``/``"ft"``.
+
+    A match is included only when it is (a) *not* group stage — no truthy ``group`` field — and
+    (b) actually decided. Unplayed fixtures, still-level ties with no ET/shootout data, and matches
+    missing a team name are skipped. Team names run through :func:`core.config.normalize_team`.
+    """
+    out: list[dict] = []
+    for m in data.get("matches", []):
+        if m.get("group"):  # knockout only; group matches go through parse_openfootball_matches
+            continue
+        home = config.normalize_team(_team_name(m.get("team1")))
+        away = config.normalize_team(_team_name(m.get("team2")))
+        if not home or not away:
+            continue
+        score = m.get("score") or {}
+        winner = decided_by = None
+        for label, keys in _KO_STAGES:
+            pair = _score_pair(score, keys)
+            if pair is None or pair[0] == pair[1]:
+                continue  # stage absent or level — not decisive here, fall through to the next
+            winner = home if pair[0] > pair[1] else away
+            decided_by = label
+            break
+        if winner is None:
+            continue  # not played, or no decisive stage yet — nothing to lock
+        ft = _score_pair(score, ("ft",))
+        out.append(
+            {
+                "home": home,
+                "away": away,
+                "home_score": ft[0] if ft is not None else None,
+                "away_score": ft[1] if ft is not None else None,
+                "winner": winner,
+                "decided_by": decided_by,
+            }
+        )
+    return out
+
+
 # --------------------------------------------------------------------------------------
 # Snapshot cache (gitignored; lets the app work offline from the last good fetch)
 # --------------------------------------------------------------------------------------
 def _empty_snapshot(error: str | None = None) -> dict:
-    snap: dict = {"fetched_at": None, "source": SOURCE, "url": None, "known_results": []}
+    snap: dict = {
+        "fetched_at": None,
+        "source": SOURCE,
+        "url": None,
+        "known_results": [],
+        "known_ko_results": [],
+    }
     if error is not None:
         snap["error"] = error
     return snap
@@ -143,6 +216,7 @@ def fetch_live_results(
             "source": SOURCE,
             "url": url,
             "known_results": parse_openfootball_matches(data),
+            "known_ko_results": parse_openfootball_knockout(data),
         }
         _write_cache(snapshot, cache_path)
         return snapshot
@@ -173,4 +247,21 @@ def merge_known_results(wc: dict, results: list[dict]) -> dict:
         by_pair[frozenset((r["home"], r["away"]))] = r
     merged = dict(wc)
     merged["known_results"] = list(by_pair.values())
+    return merged
+
+
+def merge_known_ko_results(wc: dict, ko_results: list[dict]) -> dict:
+    """Return a shallow copy of ``wc`` with ``ko_results`` merged into its ``known_ko_results``.
+
+    The knockout sibling of :func:`merge_known_results`: keyed by the unordered team pair, so each
+    tie appears once and a live result overrides any committed one. Each entry carries a ``winner``
+    (see :func:`parse_openfootball_knockout`) — that, not the score, is what the simulator locks.
+    """
+    by_pair: dict[frozenset, dict] = {
+        frozenset((r["home"], r["away"])): r for r in wc.get("known_ko_results", [])
+    }
+    for r in ko_results:
+        by_pair[frozenset((r["home"], r["away"]))] = r
+    merged = dict(wc)
+    merged["known_ko_results"] = list(by_pair.values())
     return merged

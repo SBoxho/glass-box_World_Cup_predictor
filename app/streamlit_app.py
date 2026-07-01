@@ -451,43 +451,67 @@ def tab_predictor(predictor, artifact, explainer, wc, state, rosters):
         render_squad_panel(team_a, team_b, rosters)
 
 
-def _results_fingerprint(locked: list[dict]) -> str:
-    """Stable content hash of the locked group results.
+def _results_fingerprint(locked: list[dict], ko_locked: list[dict] | None = None) -> str:
+    """Stable content hash of the locked group *and* knockout results.
 
     Used as the standings part of the simulator cache key and to decide when a cached simulation
-    is stale. It folds in *only* the scores (home/away teams + goals), not the fetch timestamp, so
-    an auto-refresh that re-pulls identical results does **not** needlessly rebuild the simulator or
-    discard the user's current run — those only change when a scoreline actually changes.
+    is stale. It folds in the group scores (home/away teams + goals) and the knockout *winners* —
+    not the fetch timestamp — so an auto-refresh that re-pulls identical results does **not**
+    needlessly rebuild the simulator or discard the user's current run. The knockout *winner* (not
+    its score) is what the simulator locks, so a shootout that flips the result — same 1–1 full
+    time, different side through — correctly invalidates the cache.
     """
-    payload = sorted((r["home"], r["away"], r["home_score"], r["away_score"]) for r in locked)
+    payload = {
+        "grp": sorted((r["home"], r["away"], r["home_score"], r["away_score"]) for r in locked),
+        "ko": sorted((r["home"], r["away"], r["winner"]) for r in (ko_locked or [])),
+    }
     return hashlib.md5(json.dumps(payload).encode()).hexdigest()  # noqa: S324 (non-crypto cache key)
 
 
 def _effective_results(wc: dict, snapshot: dict | None):
-    """Merge committed + live ``known_results``; return (wc_eff, locked, fetched_at, source).
+    """Merge committed + live results; return (wc_eff, locked, ko_locked, fetched_at, source).
 
-    A live snapshot (from the Refresh button) takes precedence; otherwise any results committed in
-    wc2026.json are used; otherwise the simulator runs from a blank pre-tournament state.
+    A live snapshot (from the auto-refresh feed) takes precedence; otherwise any results committed
+    in wc2026.json are used; otherwise the simulator runs from a blank pre-tournament state. Group
+    scores and knockout winners are merged independently — the sim locks group *scores*
+    (``known_results``) and knockout *winners* (``known_ko_results``), and either can be present
+    without the other.
     """
-    committed = wc.get("known_results", [])
     live_results = snapshot.get("known_results", []) if snapshot else []
+    live_ko = snapshot.get("known_ko_results", []) if snapshot else []
+
+    committed = wc.get("known_results", [])
     if live_results:
         wc_eff = live.merge_known_results(wc, live_results)
-        return wc_eff, wc_eff["known_results"], snapshot.get("fetched_at"), snapshot.get("source")
-    if committed:
-        return wc, committed, wc.get("known_results_as_of"), "data/wc2026.json (committed)"
-    return wc, [], None, None
+        locked, fetched_at, source = wc_eff["known_results"], snapshot.get("fetched_at"), snapshot.get("source")
+    elif committed:
+        wc_eff, locked = wc, committed
+        fetched_at, source = wc.get("known_results_as_of"), "data/wc2026.json (committed)"
+    else:
+        wc_eff, locked, fetched_at, source = wc, [], None, None
+
+    # Knockout winners: live overrides any committed block; attach to wc_eff for the simulator.
+    committed_ko = wc.get("known_ko_results", [])
+    if live_ko or committed_ko:
+        wc_eff = live.merge_known_ko_results(wc_eff, live_ko or committed_ko)
+        ko_locked = wc_eff["known_ko_results"]
+        if fetched_at is None and live_ko:  # KO-only snapshot (no locked group scores)
+            fetched_at, source = snapshot.get("fetched_at"), snapshot.get("source")
+    else:
+        ko_locked = []
+    return wc_eff, locked, ko_locked, fetched_at, source
 
 
-def _render_live_status(snapshot, locked, fetched_at, source) -> None:
-    """Show the 'as of' line + a locked-results expander, or an honest fallback message."""
-    if snapshot is not None and snapshot.get("error") and not locked:
+def _render_live_status(snapshot, locked, fetched_at, source, ko_locked=None) -> None:
+    """Show the 'as of' line + locked-results expanders, or an honest fallback message."""
+    ko_locked = ko_locked or []
+    if snapshot is not None and snapshot.get("error") and not locked and not ko_locked:
         st.warning(
             "Couldn't fetch live results (offline or source unavailable). "
             "Simulating from the pre-tournament state."
         )
         return
-    if not locked:
+    if not locked and not ko_locked:
         if snapshot is not None:
             st.info(
                 "Live feed reached, but no played group matches were found yet. "
@@ -499,19 +523,41 @@ def _render_live_status(snapshot, locked, fetched_at, source) -> None:
                 "Click **🔄 Refresh live results** to pull current standings."
             )
         return
-    st.caption(
-        f"📡 **{len(locked)}** group match(es) locked · as of {fetched_at} · source: {source}"
-    )
-    with st.expander(f"Locked group results ({len(locked)})", expanded=False):
-        rows = [
-            {
-                "Home": r["home"],
-                "Score": f"{r['home_score']}–{r['away_score']}",
-                "Away": r["away"],
-            }
-            for r in locked
-        ]
-        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    bits = []
+    if locked:
+        bits.append(f"**{len(locked)}** group match(es)")
+    if ko_locked:
+        bits.append(f"**{len(ko_locked)}** knockout result(s)")
+    st.caption(f"📡 {' · '.join(bits)} locked · as of {fetched_at} · source: {source}")
+    if locked:
+        with st.expander(f"Locked group results ({len(locked)})", expanded=False):
+            rows = [
+                {
+                    "Home": r["home"],
+                    "Score": f"{r['home_score']}–{r['away_score']}",
+                    "Away": r["away"],
+                }
+                for r in locked
+            ]
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    if ko_locked:
+        with st.expander(f"Locked knockout results ({len(ko_locked)})", expanded=False):
+            _decided = {"pen": "pens", "et": "a.e.t.", "ft": "full time"}
+            rows = [
+                {
+                    "Home": r["home"],
+                    "Score": (
+                        f"{r['home_score']}–{r['away_score']}"
+                        if r.get("home_score") is not None
+                        else "—"
+                    ),
+                    "Away": r["away"],
+                    "Advances": r["winner"],
+                    "Decided": _decided.get(r.get("decided_by"), r.get("decided_by") or ""),
+                }
+                for r in ko_locked
+            ]
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
 
 def tab_simulator(predictor, artifact, wc):
@@ -526,12 +572,12 @@ def tab_simulator(predictor, artifact, wc):
     # fallbacks inside the fetcher keep this offline-safe.
     nonce = st.session_state.get("live_nonce", 0)
     snapshot = fetch_live(nonce)
-    wc_eff, locked, fetched_at, source = _effective_results(wc, snapshot)
-    _render_live_status(snapshot, locked, fetched_at, source)
+    wc_eff, locked, ko_locked, fetched_at, source = _effective_results(wc, snapshot)
+    _render_live_status(snapshot, locked, fetched_at, source, ko_locked)
 
-    # Drop a cached run only when the standings actually change (not on every silent refresh), so an
+    # Drop a cached run only when the results actually change (not on every silent refresh), so an
     # auto-refresh that re-pulls identical results leaves the user's current simulation in place.
-    fingerprint = _results_fingerprint(locked)
+    fingerprint = _results_fingerprint(locked, ko_locked)
     if st.session_state.get("sim_fingerprint") != fingerprint:
         st.session_state.pop("sim_result", None)
         st.session_state["sim_fingerprint"] = fingerprint
@@ -648,9 +694,9 @@ def tab_my_team(predictor, artifact, explainer, wc, state):
     """
     nonce = st.session_state.get("live_nonce", 0)
     snapshot = fetch_live(nonce)
-    wc_eff, locked, fetched_at, source = _effective_results(wc, snapshot)
+    wc_eff, locked, ko_locked, fetched_at, source = _effective_results(wc, snapshot)
     fifa_rank = load_fifa_positions()
-    key = f"{artifact.trained_through}|{_results_fingerprint(locked)}|fifa{len(fifa_rank)}"
+    key = f"{artifact.trained_through}|{_results_fingerprint(locked, ko_locked)}|fifa{len(fifa_rank)}"
     sim = get_simulator(predictor, wc_eff, fifa_rank, key)
     result = st.session_state.get("sim_result")
     if result is None:
