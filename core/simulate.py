@@ -189,6 +189,12 @@ class TournamentSimulator:
         # (a bare simulator) skips that criterion, keeping the structure tests deterministic.
         self.fifa_rank = fifa_rank
         self._known = self._index_known_results(wc2026.get("known_results", []))
+        # Completed knockout ties: a winner per unordered pair, plus the set of teams that have been
+        # knocked out. The pair map honors the real result (including upsets) whenever that exact tie
+        # recurs in a sim; the eliminated set is the safety net that keeps a team that has actually
+        # been knocked out from ever advancing, even if the re-drawn bracket pairs it differently
+        # (group tiebreakers are a documented approximation of FIFA's).
+        self._known_ko, self._eliminated = self._index_known_ko(wc2026.get("known_ko_results", []))
         self._prepare()
 
     # -- precompute -----------------------------------------------------------------
@@ -197,6 +203,18 @@ class TournamentSimulator:
         for k in known:
             out[frozenset((k["home"], k["away"]))] = k
         return out
+
+    def _index_known_ko(self, known: list[dict]) -> tuple[dict, set]:
+        """Return ``({frozenset(pair): winner}, {eliminated teams})`` from locked knockout results."""
+        by_pair: dict[frozenset, str] = {}
+        eliminated: set[str] = set()
+        for k in known:
+            home, away, winner = k["home"], k["away"], k.get("winner")
+            if winner not in (home, away):
+                continue  # malformed entry — no usable winner for this tie
+            by_pair[frozenset((home, away))] = winner
+            eliminated.add(away if winner == home else home)
+        return by_pair, eliminated
 
     def _group_fixtures(self):
         """For each group, the 6 oriented fixtures with their outcome probabilities + goal means."""
@@ -305,6 +323,24 @@ class TournamentSimulator:
         p = self.adv[self.idx[a], self.idx[b]]
         return a if self.rng.random() < p else b
 
+    def _resolve_knockout(self, a: str, b: str) -> str:
+        """Winner of a knockout tie, honoring any completed real result before sampling.
+
+        Priority: (1) the exact recorded winner if this pair has already met for real — this keeps
+        upsets faithful; (2) if exactly one side has actually been knocked out (bracket drift paired
+        them elsewhere), the other side advances; (3) otherwise sample the model as usual. A pair of
+        two eliminated teams (e.g. the third-place match) falls to sampling — neither can advance.
+        """
+        forced = self._known_ko.get(frozenset((a, b)))
+        if forced in (a, b):
+            return forced
+        a_out, b_out = a in self._eliminated, b in self._eliminated
+        if a_out and not b_out:
+            return b
+        if b_out and not a_out:
+            return a
+        return self._knockout(a, b)
+
     def simulate_once(self) -> dict:
         """Play one full tournament; return the set of teams reaching each stage + the final.
 
@@ -347,7 +383,7 @@ class TournamentSimulator:
         for m in self.spec.matches:
             a, b = resolve(m.a), resolve(m.b)
             participants[m.id] = (a, b)
-            win = self._knockout(a, b)
+            win = self._resolve_knockout(a, b)
             winner_team[m.id] = win
             if m.win_token:
                 won[m.win_token] = win
