@@ -108,11 +108,14 @@ def _score_pair(score: dict, keys: tuple[str, ...]) -> tuple[int, int] | None:
 def parse_openfootball_knockout(data: dict) -> list[dict]:
     """Extract played *knockout* results from an openfootball ``worldcup.json`` payload.
 
-    Returns ``{home, away, home_score, away_score, winner, decided_by}`` dicts. A knockout tie can go
-    to extra time or penalties, so the *winner* — not the score — is what the simulator locks. The
-    deciding stage is the most decisive one present (:data:`_KO_STAGES`): penalties → extra time →
-    full time; the first stage with a non-level score names the winner. ``home_score``/``away_score``
-    are the full-time goals (for display); ``decided_by`` is ``"pen"``/``"et"``/``"ft"``.
+    Returns ``{home, away, home_score, away_score, winner, decided_by}`` dicts (plus ``pens`` for a
+    shootout). A knockout tie can go to extra time or penalties, so the *winner* — not the score — is
+    what the simulator locks. The deciding stage is the most decisive one present (:data:`_KO_STAGES`):
+    penalties → extra time → full time; the first stage with a non-level score names the winner.
+    ``home_score``/``away_score`` are the goals that stood — the *extra-time* score when the tie was
+    settled in ET (a level full-time line would misread as a draw), else full time, oriented
+    ``[home, away]`` for display; ``pens`` is the ``[home, away]`` shootout tally when
+    ``decided_by == "pen"``; ``decided_by`` is ``"pen"``/``"et"``/``"ft"``.
 
     A match is included only when it is (a) *not* group stage — no truthy ``group`` field — and
     (b) actually decided. Unplayed fixtures, still-level ties with no ET/shootout data, and matches
@@ -127,27 +130,31 @@ def parse_openfootball_knockout(data: dict) -> list[dict]:
         if not home or not away:
             continue
         score = m.get("score") or {}
-        winner = decided_by = None
+        winner = decided_by = decisive = None
         for label, keys in _KO_STAGES:
             pair = _score_pair(score, keys)
             if pair is None or pair[0] == pair[1]:
                 continue  # stage absent or level — not decisive here, fall through to the next
-            winner = home if pair[0] > pair[1] else away
-            decided_by = label
+            winner, decided_by, decisive = (home if pair[0] > pair[1] else away), label, pair
             break
         if winner is None:
             continue  # not played, or no decisive stage yet — nothing to lock
-        ft = _score_pair(score, ("ft",))
-        out.append(
-            {
-                "home": home,
-                "away": away,
-                "home_score": ft[0] if ft is not None else None,
-                "away_score": ft[1] if ft is not None else None,
-                "winner": winner,
-                "decided_by": decided_by,
-            }
-        )
+        # Display scoreboard: the goals that actually stood. When the tie went to extra time that is
+        # the ET score (``decisive``) — a level full-time line would read as a draw on the bracket
+        # card; otherwise the full-time goals. A shootout is not goals, so its tally rides in
+        # ``pens`` and the card renders it as "1–1 (4–2 pens)".
+        goals = decisive if decided_by == "et" else _score_pair(score, ("ft",))
+        rec = {
+            "home": home,
+            "away": away,
+            "home_score": goals[0] if goals is not None else None,
+            "away_score": goals[1] if goals is not None else None,
+            "winner": winner,
+            "decided_by": decided_by,
+        }
+        if decided_by == "pen":  # ``decisive`` is the shootout tally, oriented [team1, team2]
+            rec["pens"] = [decisive[0], decisive[1]]
+        out.append(rec)
     return out
 
 
