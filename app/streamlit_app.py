@@ -220,6 +220,22 @@ def _played_pairs():
     return out
 
 
+def _ko_played_pairs(ko_locked):
+    """Already-played knockout ties keyed by unordered team pair, for the bracket cards.
+
+    Built from the live/committed ``known_ko_results`` (winner + how the tie was decided + any
+    shootout tally) rather than the ft-only :func:`_played_pairs` map, so a tie settled in extra
+    time or on penalties renders its real winner and score instead of the draw its regulation line
+    alone would suggest. A tiny dict rebuilt from the already-fetched snapshot each run (not cached
+    — the input list isn't hashable and this is trivial)."""
+    out: dict = {}
+    for r in ko_locked or []:
+        home, away = r.get("home"), r.get("away")
+        if home and away:
+            out[frozenset((home, away))] = r
+    return out
+
+
 @st.cache_data(ttl=LIVE_REFRESH_SECS, show_spinner=False)
 def fetch_fixtures(nonce: int):
     """Pull the full live 2026 schedule (kickoffs, venues, scores) for the Matchday page.
@@ -647,6 +663,7 @@ def tab_simulator(predictor, artifact, wc):
         ratings,
         selected_team=selected_team,
         played=_played_pairs(),
+        ko_played=_ko_played_pairs(ko_locked),
         highlights=highlights,
     )
 
@@ -719,6 +736,7 @@ def tab_my_team(predictor, artifact, explainer, wc, state):
         result,
         fixtures_list=(schedule or {}).get("fixtures") or [],
         played=_played_pairs(),
+        ko_played=_ko_played_pairs(ko_locked),
         tz=tz,
         known_results=locked,
         source=source,

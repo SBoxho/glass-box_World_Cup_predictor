@@ -344,6 +344,7 @@ def render_team_page(
     *,
     fixtures_list=None,
     played=None,
+    ko_played=None,
     now=None,
     tz=None,
     known_results=None,
@@ -419,7 +420,9 @@ def render_team_page(
     _render_path(stages, team)
     with st.expander(f"See {team}'s road traced on the full bracket", expanded=False):
         bracket_view.render_legend(team)
-        bracket_view.render_bracket(result, state.ratings, selected_team=team, played=played)
+        bracket_view.render_bracket(
+            result, state.ratings, selected_team=team, played=played, ko_played=ko_played
+        )
 
     st.divider()
     _render_factors(dossier["factors"], team)

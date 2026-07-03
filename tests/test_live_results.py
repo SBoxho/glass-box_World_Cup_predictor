@@ -202,17 +202,25 @@ def test_parse_openfootball_knockout_ft_et_pens_and_skips():
             {"round": "Round of 16", "team1": "England", "team2": "Portugal", "score": None},
         ]
     }
+    parsed = {(r["home"], r["away"]): r for r in live.parse_openfootball_knockout(data)}
     got = {
-        (r["home"], r["away"]): (r["winner"], r["decided_by"], r["home_score"], r["away_score"])
-        for r in live.parse_openfootball_knockout(data)
+        pair: (r["winner"], r["decided_by"], r["home_score"], r["away_score"])
+        for pair, r in parsed.items()
     }
     assert got == {
         ("Brazil", "Japan"): ("Brazil", "ft", 2, 1),
-        ("Spain", "Italy"): ("Spain", "et", 1, 1),
+        # Decided by a goal in extra time -> the ET score is the scoreboard (a level 1–1 full-time
+        # line would misread as a draw on the bracket card).
+        ("Spain", "Italy"): ("Spain", "et", 2, 1),
         # Netherlands lost the shootout despite a level score line — the winner, not the score, is
         # what gets locked; home/away scores keep the full-time 1–1 for display.
         ("Netherlands", "Morocco"): ("Morocco", "pen", 1, 1),
     }
+    # The shootout tally rides in ``pens`` (oriented [home, away]) only for a penalty result, so the
+    # card can render "1–1 (2–3 pens)"; regulation/ET results carry no shootout.
+    assert parsed[("Netherlands", "Morocco")]["pens"] == [2, 3]
+    assert "pens" not in parsed[("Brazil", "Japan")]
+    assert "pens" not in parsed[("Spain", "Italy")]
 
 
 def test_merge_known_ko_results_overrides_and_no_mutation():

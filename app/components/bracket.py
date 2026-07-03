@@ -98,6 +98,8 @@ _CSS = """
             font-variant-numeric: tabular-nums; margin-top: 1px; }
   .winpct .l { color: #7dd3fc; } .winpct .r { color: #fda4af; }
   .played { font-size: 13px; font-weight: 800; text-align: center; color: #fde68a; margin: 2px 0; }
+  .played .win { color: #fef9c3; }
+  .played .lose { opacity: .5; }
   .tags { display: flex; gap: 3px; justify-content: flex-end; height: 0; }
   .dot { width: 7px; height: 7px; border-radius: 50%; margin-top: -3px; }
   .tag { position: relative; font-size: 8.5px; font-weight: 800; letter-spacing: .03em;
@@ -241,6 +243,58 @@ def _played_for(match: dict, played: dict | None):
     return a, sa, b, sb
 
 
+# Knockout deciding stage → the badge shown after the score line. A shootout replaces the badge with
+# its own tally (e.g. "4–2 pens"); a plain regulation win keeps the group-stage "FT" stamp.
+_KO_BADGE = {"ft": "FT", "et": "a.e.t.", "pen": "pens"}
+
+
+def _played_ko_line(match: dict, ko_played: dict | None):
+    """Oriented, winner-aware score line for an already-played *knockout* tie, or ``None``.
+
+    Sourced from the live/committed ``known_ko_results`` (which carry the winner and *how* the tie
+    was decided), not the ft-only ``played`` map — so a tie won in extra time or on penalties no
+    longer reads as the draw its full-time line alone would suggest. Returns
+    ``(a, sa, b, sb, badge, winner)`` oriented to the card's top (``a``) / bottom (``b``) slots:
+    ``badge`` is ``"FT"`` / ``"a.e.t."`` / ``"4–2 pens"`` and ``winner`` is the team that advanced.
+    """
+    if not ko_played or not match["top"] or not match["bottom"]:
+        return None
+    a, b = match["top"][0]["team"], match["bottom"][0]["team"]
+    rec = ko_played.get(frozenset((a, b)))
+    if not rec:
+        return None
+    sa, sb = rec.get("home_score"), rec.get("away_score")
+    pens = rec.get("pens")
+    if rec.get("home") != a:  # record oriented (b, a) → flip scores + shootout to (a, b)
+        sa, sb = sb, sa
+        pens = [pens[1], pens[0]] if pens else pens
+    if sa is None or sb is None:
+        return None  # decided, but no goals in the feed — let the simulated split render instead
+    decided_by = rec.get("decided_by")
+    if decided_by == "pen" and pens and len(pens) == 2:
+        badge = f"{pens[0]}–{pens[1]} pens"
+    else:
+        badge = _KO_BADGE.get(decided_by, "FT")
+    return a, sa, b, sb, badge, rec.get("winner")
+
+
+def _played_mid_html(a, sa, b, sb, badge: str, winner: str | None) -> str:
+    """The centred score line for a played tie. When ``winner`` is known (a knockout result) the
+    advancing side is brightened and the eliminated side dimmed, so the card shows *who went
+    through* even when the goals were level and a shootout settled it."""
+
+    def _side(team) -> str:
+        cls = ""
+        if winner is not None:
+            cls = ' class="win"' if team == winner else ' class="lose"'
+        return f"<span{cls}>{_esc(flags.short_name(team))}</span>"
+
+    return (
+        f'<div class="played">{_side(a)} {sa}–{sb} {_side(b)} '
+        f'<span class="ftbadge">{_esc(badge)}</span></div>'
+    )
+
+
 def _marks(rk: str, m: int, paths: dict, toss: dict | None) -> dict:
     """Which highlights touch match (rk, m): the traced sides per kind + a toss-up flag."""
     kinds: dict[str, str] = {}  # kind -> side ("top"/"bottom") it traces here
@@ -252,7 +306,7 @@ def _marks(rk: str, m: int, paths: dict, toss: dict | None) -> dict:
     return {"kinds": kinds, "toss": is_toss}
 
 
-def _match_html(match: dict, mark: dict, played: dict | None) -> str:
+def _match_html(match: dict, mark: dict, played: dict | None, ko_played: dict | None = None) -> str:
     rk, m = match["round"], match["index"]
     advance = match["advance"]
     fav_team = advance[0]["team"] if advance else None
@@ -272,13 +326,15 @@ def _match_html(match: dict, mark: dict, played: dict | None) -> str:
     if mark["toss"]:
         tag = f'<span class="tag" style="background:{_ACCENT["toss"]};color:#3a2606">toss-up</span>'
 
-    played_line = _played_for(match, played)
-    if played_line is not None:
+    # A played knockout tie (winner + how it was decided) wins over the ft-only ``played`` map, so a
+    # shootout/extra-time result shows its real winner instead of a misleading level full-time line.
+    ko_line = _played_ko_line(match, ko_played)
+    if ko_line is not None:
+        a, sa, b, sb, badge, winner = ko_line
+        mid = _played_mid_html(a, sa, b, sb, badge, winner)
+    elif (played_line := _played_for(match, played)) is not None:
         a, sa, b, sb = played_line
-        mid = (
-            f'<div class="played">{_esc(flags.short_name(a))} {sa}–{sb} '
-            f'{_esc(flags.short_name(b))} <span class="ftbadge">FT</span></div>'
-        )
+        mid = _played_mid_html(a, sa, b, sb, "FT", None)
     else:
         mid = _split_html(match)
 
@@ -320,11 +376,13 @@ def _champion_html(bracket: dict) -> str:
     return f'<div class="col">{head}<div class="col-body">{_band(inner, 16)}</div></div>'
 
 
-def _column_html(rnd: dict, paths: dict, toss: dict | None, played: dict | None) -> str:
+def _column_html(
+    rnd: dict, paths: dict, toss: dict | None, played: dict | None, ko_played: dict | None = None
+) -> str:
     rk = rnd["key"]
     mult = _BAND_MULT[rk]
     bands = "".join(
-        _band(_match_html(match, _marks(rk, match["index"], paths, toss), played), mult)
+        _band(_match_html(match, _marks(rk, match["index"], paths, toss), played, ko_played), mult)
         for match in rnd["matches"]
     )
     head = (
@@ -401,13 +459,17 @@ def render_bracket(
     *,
     selected_team: str | None = None,
     played: dict | None = None,
+    ko_played: dict | None = None,
     highlights: dict | None = None,
 ) -> None:
     """Render the full knockout bracket for a finished simulation into the Streamlit page.
 
     ``result`` is a :class:`core.simulate.SimulationResult` (its ``bracket`` projection is required);
     ``ratings`` (team→Elo) powers the Cinderella highlight; ``selected_team`` traces a chosen team's
-    road; ``played`` maps ``frozenset({a, b}) → {"score": {team: goals}}`` for any already-played tie.
+    road; ``played`` maps ``frozenset({a, b}) → {"score": {team: goals}}`` for any already-played tie
+    (the ft-only group stamp). ``ko_played`` maps ``frozenset({a, b}) →`` a ``known_ko_results`` row
+    (winner + ``decided_by`` + optional ``pens``) and takes precedence for knockout cards, so an
+    extra-time/shootout tie renders its real winner instead of a misleading level full-time line.
     """
     bracket = getattr(result, "bracket", None)
     if not bracket:
@@ -424,7 +486,9 @@ def render_bracket(
     }
     toss = highlights["toss_up"]
 
-    columns = "".join(_column_html(rnd, paths, toss, played) for rnd in bracket["rounds"])
+    columns = "".join(
+        _column_html(rnd, paths, toss, played, ko_played) for rnd in bracket["rounds"]
+    )
     columns += _champion_html(bracket)
     col_h = 16 * _BAND_PX
     body = (
