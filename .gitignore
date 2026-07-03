@@ -27,6 +27,7 @@ Thumbs.db
 # (Run scripts/build_dataset.py + scripts/train.py to regenerate.)
 data/raw/
 data/processed/
+notebooks/*.csv
 
 # Enhancement module (§15): proprietary rating dumps must never be committed.
 data/external/
