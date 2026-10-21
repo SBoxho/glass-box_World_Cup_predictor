@@ -42,6 +42,10 @@ The probabilities are genuinely usable as probabilities — expected calibration
   lifting the trophy, plus the most-likely final. **Refresh live results** to lock already-played
   group matches (free CC0 [openfootball](https://github.com/openfootball/worldcup.json) feed, no
   API key) and re-simulate forward from the current standings; works offline if you skip it.
+  **Now that the tournament is over**, the tab switches to a **pre-tournament replay**: it
+  re-plays all 104 matches as the model saw them on the eve of the opener — no 2026 World Cup
+  result is used anywhere — and then grades the run against what actually happened (see
+  [below](#after-the-final--a-pre-tournament-replay-with-no-look-ahead)).
 - **Choose Your Team** — pick any of the 48 finalists and the page becomes a fan-facing team
   view: title odds framed against the field favourite (so the spread stays visible), a
   stage-by-stage run funnel, the group outlook (model advance odds + live standings), the next
@@ -153,6 +157,38 @@ only meet in the final.
 
 (Exact numbers depend on the seed and simulation count.)
 
+### After the final — a pre-tournament replay with no look-ahead
+
+Once the final is played the live simulator has nothing left to do (every match is locked), so the
+Simulate tab re-runs the tournament **as of the eve of the opener (10 June 2026)** and only then
+compares the result with reality. Every input is cut at the opening day (`core/replay.py`):
+
+- **Model** — a separate artifact, `models/model_pre_wc.joblib`, same recipe but trained only on
+  matches before 11 June 2026 (`scripts/train_pre_wc.py`). The production model was trained a few
+  days into the group stage (12 World Cup games), so it is not used for the replay.
+- **Team strength** (Elo, form, head-to-head, rest) — replayed from matches before 11 June 2026.
+- **FIFA ranking** (feature and group tiebreaker) — the pre-tournament edition only.
+- **Tournament** — the December 2025 draw with **no locked result**; all 104 matches are simulated.
+- **Squad ratings** — the EA FC 26 snapshot the app used throughout (captured 17 June 2026). It's a
+  player-ratings database, not match results, and is flagged in the app as the one input dated
+  after kick-off.
+- **Actual results** are loaded only to grade the finished run and are never passed to the
+  simulator. `tests/test_replay.py` pins this: fabricated post-cutoff matches/rankings must leave the
+  team-strength state unchanged, and the replay is identical whatever the real results were.
+
+With 10,000 runs (seed 42) the replay makes **Spain the title favourite (~30%)**, ahead of
+Argentina (~15%) and France (~13%). Its most likely final is **Argentina vs Spain** (~10%), and its
+top four by semi-final odds are exactly the four real semi-finalists. Spain went on to beat
+Argentina 1–0 after extra time. One tournament is a single noisy draw, so that is a good read of
+team strength plus some luck, not proof. The replay also missed real surprises (e.g. Norway,
+Switzerland and Morocco in the quarter-finals).
+
+📝 The same call was made **during** the tournament:
+[*I simulated the FIFA 2026 World Cup 1 million times — here is what the model predicts*](https://medium.com/@SebastienB./i-simulated-the-fifa-2026-world-cup-1-million-times-here-is-what-the-model-predicts-bf68aa9d23fb)
+(Medium). It was written from a 1,000,000-run simulation on 23 June 2026, with 44 of 72 group games
+played and no knockout game yet (`reports/sim_1M.json`): Spain 30.8%, Argentina 18.8%, most
+likely final Argentina vs Spain.
+
 ### Limitations
 
 International football is a **small-data, high-variance** sport: upsets are common and a single
@@ -182,6 +218,10 @@ hand-built payloads, no network, no committed artifacts needed):
   one champion.
 - **`test_live_results.py`** — live group results parse & normalize, degrade to cache offline, and
   are honored by the simulator (locked matches change the standings).
+- **`test_replay.py`** — the post-tournament replay has no look-ahead: no result is locked, team
+  strength and FIFA ranking are invariant to anything dated on/after the opener, the simulation is
+  identical whatever the real results were, the committed replay model predates the opener, and
+  the grading reconstructs each team's real furthest stage from the feed's round labels.
 - **`test_fixtures.py`** — the schedule provider behind Matchday Home: kick-off times resolve to
   UTC across timezone offsets, live/next/today selection is correct against a frozen clock, and the
   fetch degrades to cache offline.
@@ -201,6 +241,7 @@ pip install -r requirements.txt
 python scripts/build_squads_snapshot.py  # (optional) regenerate data/squads2026.json from EA FC 26
 python scripts/build_dataset.py          # download history + ratings, engineer features (~30 s)
 python scripts/train.py                  # train, calibrate, write models/ artifacts (~30 s)
+python scripts/train_pre_wc.py           # (optional) the pre-tournament replay model (~20 s)
 streamlit run app/streamlit_app.py       # launch the app
 ```
 

@@ -36,6 +36,7 @@ from core import (  # noqa: E402
     live,
     model,
     ranking,
+    replay,
     simulate,
     squads,
 )
@@ -179,6 +180,47 @@ def load_fifa_positions():
 @st.cache_resource(show_spinner="Preparing matchup probabilities …")
 def get_simulator(_predictor, _wc, _fifa_rank, key: str):
     return simulate.TournamentSimulator(_predictor, _wc, fifa_rank=_fifa_rank or None)
+
+
+# --- Pre-tournament replay inputs: everything cut at the 2026 opener (see core/replay.py) ----------
+@st.cache_resource(show_spinner="Loading the pre-tournament model …")
+def load_replay_artifact():
+    """The replay model (trained strictly before the opener), or ``None`` if it isn't committed."""
+    try:
+        return model.load_model(config.REPLAY_MODEL_PATH)
+    except FileNotFoundError:
+        return None
+
+
+@st.cache_resource(show_spinner="Rewinding team strength to the eve of the tournament …")
+def load_replay_state(_matches, cutoff: str):
+    """Elo / form / head-to-head from matches before ``cutoff`` + the pre-tournament FIFA ranking."""
+    return replay.build_pre_tournament_state(
+        _matches, _load_rankings_safe(), _load_squads_safe(), pd.Timestamp(cutoff)
+    )
+
+
+@st.cache_resource(show_spinner=False)
+def load_replay_fifa_positions(cutoff: str):
+    """FIFA-ranking tiebreaker positions from the pre-tournament edition only. Best-effort ``{}``."""
+    rankings = _load_rankings_safe()
+    if rankings is None:
+        return {}
+    try:
+        return ranking.positions_as_of(
+            replay.pre_tournament_rankings(rankings, pd.Timestamp(cutoff))
+        )
+    except Exception:  # optional tiebreaker enrichment — never let it take the whole app down
+        return {}
+
+
+@st.cache_data(show_spinner=False)
+def load_article_snapshot():
+    """Headline numbers of the 1M-run simulation behind the mid-tournament Medium article."""
+    try:
+        return json.loads((config.BASE_DIR / "reports" / "sim_1M.json").read_text(encoding="utf-8"))
+    except Exception:
+        return None
 
 
 @st.cache_data(ttl=LIVE_REFRESH_SECS, show_spinner=False)
@@ -580,29 +622,8 @@ def _render_live_status(snapshot, locked, fetched_at, source, ko_locked=None) ->
             st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
 
-def tab_simulator(predictor, artifact, wc):
-    st.subheader("Tournament Simulator")
-    st.caption(
-        "Monte Carlo over the full 48-team bracket: 12 groups → top 2 + 8 best thirds → "
-        "Round of 32 → Final. Each match is sampled from the model's calibrated probabilities."
-    )
-
-    # --- Live results: lock already-played group matches so the sim runs forward ---------------
-    # Pulled automatically (cached, refreshed by the heartbeat) — no button. The committed/empty
-    # fallbacks inside the fetcher keep this offline-safe.
-    nonce = st.session_state.get("live_nonce", 0)
-    snapshot = fetch_live(nonce)
-    wc_eff, locked, ko_locked, fetched_at, source = _effective_results(wc, snapshot)
-    _render_live_status(snapshot, locked, fetched_at, source, ko_locked)
-
-    # Drop a cached run only when the results actually change (not on every silent refresh), so an
-    # auto-refresh that re-pulls identical results leaves the user's current simulation in place.
-    fingerprint = _results_fingerprint(locked, ko_locked)
-    if st.session_state.get("sim_fingerprint") != fingerprint:
-        st.session_state.pop("sim_result", None)
-        st.session_state["sim_fingerprint"] = fingerprint
-
-    # --- Simulation controls -------------------------------------------------------------------
+def _sim_controls(button_label: str = "Run simulation"):
+    """The shared Simulations / Seed / Run row; returns ``(n_sims, seed, run_clicked)``."""
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
         n_sims = st.select_slider("Simulations", options=[2000, 5000, 10000, 20000], value=10000)
@@ -611,25 +632,12 @@ def tab_simulator(predictor, artifact, wc):
     with c3:
         st.write("")
         st.write("")
-        run = st.button("Run simulation", type="primary", width="stretch")
+        run = st.button(button_label, type="primary", width="stretch")
+    return n_sims, seed, run
 
-    fifa_rank = load_fifa_positions()
-    sim = get_simulator(
-        predictor,
-        wc_eff,
-        fifa_rank,
-        f"{artifact.trained_through}|{fingerprint}|fifa{len(fifa_rank)}",
-    )
 
-    if run:
-        with st.spinner(f"Simulating {n_sims:,} tournaments …"):
-            st.session_state["sim_result"] = sim.run(n_sims=int(n_sims), seed=int(seed))
-
-    result = st.session_state.get("sim_result")
-    if result is None:
-        st.info("Set the options and hit **Run simulation**.")
-        return
-
+def _render_sim_views(result, ratings, *, played: dict, ko_played: dict) -> None:
+    """Most-likely final, the Road-to-the-Final bracket and the raw tables for one simulation run."""
     fin = result.most_likely_final
     st.success(
         f"**Most likely final:** {fin[0]} vs {fin[1]}  "
@@ -637,7 +645,6 @@ def tab_simulator(predictor, artifact, wc):
     )
 
     # --- Knockout bracket: the visual, story-led view of the same simulation ---------------------
-    ratings = getattr(predictor.state, "ratings", None)
     highlights = core_bracket.derive_highlights(result, ratings)
 
     st.markdown("### 🗺️ Road to the Final")
@@ -662,8 +669,8 @@ def tab_simulator(predictor, artifact, wc):
         result,
         ratings,
         selected_team=selected_team,
-        played=_played_pairs(),
-        ko_played=_ko_played_pairs(ko_locked),
+        played=played,
+        ko_played=ko_played,
         highlights=highlights,
     )
 
@@ -688,6 +695,299 @@ def tab_simulator(predictor, artifact, wc):
         )
         st.markdown("**How far each team goes** (top 16 by title probability)")
         st.plotly_chart(stage_heatmap(table.head(16)), width="stretch")
+
+
+def _model_caption(artifact, state, prefix: str = "Model") -> None:
+    """The slim 'which model / how fresh' line shown above the data-science views."""
+    st.caption(
+        f"{prefix} trained through **{artifact.trained_through}** · "
+        f"match history to **{state.as_of.date()}** · {len(state.teams)} national teams."
+    )
+
+
+def _simulator_header() -> None:
+    st.subheader("Tournament Simulator")
+    st.caption(
+        "Monte Carlo over the full 48-team bracket: 12 groups → top 2 + 8 best thirds → "
+        "Round of 32 → Final. Each match is sampled from the model's calibrated probabilities."
+    )
+
+
+def tab_simulator(predictor, artifact, wc, matches):
+    # --- Live results: lock already-played group matches so the sim runs forward ---------------
+    # Pulled automatically (cached, refreshed by the heartbeat) — no button. The committed/empty
+    # fallbacks inside the fetcher keep this offline-safe.
+    nonce = st.session_state.get("live_nonce", 0)
+    snapshot = fetch_live(nonce)
+    wc_eff, locked, ko_locked, fetched_at, source = _effective_results(wc, snapshot)
+
+    # Once the final has been played every match is locked and there is nothing left to simulate
+    # forward — switch to the pre-tournament replay (no 2026 result reaches the simulator). Past the
+    # scheduled end date the replay is used even if the feed is unreachable, so an offline run never
+    # falls back to the live model on post-tournament history.
+    teams = [t for g in wc["groups"].values() for t in g]
+    actual = replay.actual_stage_reached(ko_locked, teams)
+    if actual is not None or replay.tournament_over(wc):
+        tab_replay(wc, matches, actual, locked, ko_locked, fetched_at, source)
+        return
+
+    _model_caption(artifact, predictor.state)
+    _simulator_header()
+    _render_live_status(snapshot, locked, fetched_at, source, ko_locked)
+
+    # Drop a cached run only when the results actually change (not on every silent refresh), so an
+    # auto-refresh that re-pulls identical results leaves the user's current simulation in place.
+    fingerprint = _results_fingerprint(locked, ko_locked)
+    if st.session_state.get("sim_fingerprint") != fingerprint:
+        st.session_state.pop("sim_result", None)
+        st.session_state["sim_fingerprint"] = fingerprint
+
+    # --- Simulation controls -------------------------------------------------------------------
+    n_sims, seed, run = _sim_controls()
+
+    fifa_rank = load_fifa_positions()
+    sim = get_simulator(
+        predictor,
+        wc_eff,
+        fifa_rank,
+        f"{artifact.trained_through}|{fingerprint}|fifa{len(fifa_rank)}",
+    )
+
+    if run:
+        with st.spinner(f"Simulating {n_sims:,} tournaments …"):
+            st.session_state["sim_result"] = sim.run(n_sims=int(n_sims), seed=int(seed))
+
+    result = st.session_state.get("sim_result")
+    if result is None:
+        st.info("Set the options and hit **Run simulation**.")
+        return
+
+    _render_sim_views(
+        result,
+        getattr(predictor.state, "ratings", None),
+        played=_played_pairs(),
+        ko_played=_ko_played_pairs(ko_locked),
+    )
+
+
+# --------------------------------------------------------------------------------------
+# Pre-tournament replay (after the final): re-simulate 2026 with no look-ahead
+# --------------------------------------------------------------------------------------
+ARTICLE_URL = (
+    "https://medium.com/@SebastienB./i-simulated-the-fifa-2026-world-cup-1-million-times-here-is-"
+    "what-the-model-predicts-bf68aa9d23fb"
+)
+
+_STAGE_LABEL = {
+    "Group": "Group stage",
+    "R32": "Round of 32",
+    "R16": "Round of 16",
+    "QF": "Quarter-final",
+    "SF": "Semi-final",
+    "Final": "Final",
+    "Champion": "Champion",
+}
+_ROUND_NOUN = {
+    "R16": "Round-of-16 teams",
+    "QF": "Quarter-finalists",
+    "SF": "Semi-finalists",
+    "Final": "Finalists",
+    "Champion": "Champion",
+}
+
+
+def _render_article_callout() -> None:
+    """Link the mid-tournament Medium article, with the 1M-run numbers it was written from."""
+    snap = load_article_snapshot()
+    line = (
+        "📝 **Written during the tournament:** "
+        f"[I simulated the FIFA 2026 World Cup 1 million times]({ARTICLE_URL})"
+    )
+    meta = (snap or {}).get("meta", {})
+    top = (snap or {}).get("champion_ranking", [])[:2]
+    fin = (snap or {}).get("most_likely_final", {})
+    n_locked = meta.get("n_locked_group_results")
+    if top and n_locked is not None:
+        odds = ", ".join(f"**{t['team']} {t['p_champion']:.1%}**" for t in top)
+        line += (
+            f" — a {meta.get('n_sims', 0):,}-run simulation on "
+            f"{str(meta.get('live_fetched_at', ''))[:10]} ({n_locked} of 72 group games played, no "
+            f"knockout game yet) had {odds} as the top two, and "
+            f"**{' vs '.join(fin.get('teams', []))}** as the most likely final."
+        )
+    st.markdown(line)
+    st.caption(
+        "That article used the live app (the production model, with the group results played so "
+        "far locked in). The replay below is stricter still: it rewinds to *before* the first match."
+    )
+
+
+def _render_replay_inputs(r_artifact, r_state, cutoff: pd.Timestamp, n_fifa: int) -> None:
+    """The 'what the replay can see' audit — every input with its cut-off date."""
+    with st.expander("🔒 What the replay can and can't see — no look-ahead", expanded=False):
+        st.markdown(
+            "| Input | What the replay uses |\n"
+            "|---|---|\n"
+            f"| **Model** | A separate pre-tournament model, same recipe, trained on matches up to "
+            f"**{r_artifact.trained_through}**. (The live app's model was trained a few days into "
+            "the group stage, so it is *not* used here.) |\n"
+            "| **Team strength** — Elo, recent form, head-to-head, rest | Match history up to "
+            f"**{r_state.as_of.date()}** — every 2026 World Cup match is dropped. |\n"
+            "| **FIFA ranking** — feature & group tiebreaker | The pre-tournament edition only "
+            f"(dated on/before {cutoff.date()}; {n_fifa} teams ranked). |\n"
+            "| **Tournament** | The December 2025 draw. **No group or knockout result is locked** — "
+            "all 104 matches are re-simulated. |\n"
+            "| **Squad ratings** | The EA FC 26 snapshot the app used throughout the tournament "
+            "(captured 17 Jun 2026). It's a player-ratings database, not match results — the one "
+            "input dated after kick-off, flagged here for completeness. |\n"
+            "| **Actual results** | Loaded only to *grade* the replay after it runs (below). They "
+            "are never passed to the simulator. |"
+        )
+
+
+def _render_reality_check(result, actual: dict, ko_locked: list[dict]) -> None:
+    """Grade a finished replay against what really happened — clearly separated from the sim."""
+    rc = replay.reality_check(result.table, actual)
+
+    st.markdown("### ✅ Reality check — the replay vs what actually happened")
+    st.caption(
+        "Revealed only after the run. The real results below were **not** an input to the "
+        "simulation above — the simulator only ever saw the pre-tournament state. Where the replay "
+        "agrees with reality, that is the model's pre-tournament read of team strength (plus Monte-"
+        "Carlo luck), **not look-ahead**."
+    )
+
+    champ, fav = rc["champion"], rc["favourite"]
+    finalists = {t for t, s in actual.items() if s in ("Final", "Champion")}
+    real_final = next((r for r in ko_locked if {r["home"], r["away"]} == finalists), None)
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if champ:
+            st.metric("Actual champion", champ["team"])
+            st.caption(
+                f"Replay title odds **{champ['p']:.1%}** — #{champ['rank']} of {len(result.table)}"
+            )
+    with c2:
+        st.metric("Replay's favourite", fav["team"])
+        st.caption(f"**{fav['p']:.1%}** title odds before a ball was kicked")
+    with c3:
+        if real_final is not None:
+            fin = result.most_likely_final
+            score = (
+                f"{real_final['home']} {real_final['home_score']}–{real_final['away_score']} "
+                f"{real_final['away']}"
+                if real_final.get("home_score") is not None
+                else f"{real_final['home']} vs {real_final['away']}"
+            )
+            how = {"et": "after extra time · ", "pen": "on penalties · "}.get(
+                real_final.get("decided_by"), ""
+            )
+            st.metric("Actual final", score)
+            st.caption(
+                f"{how}replay's most likely final: **{fin[0]} vs {fin[1]}** "
+                f"({result.most_likely_final_prob:.1%})"
+            )
+
+    st.markdown(
+        "**How many of the teams that really got there were the replay's top picks?** "
+        "For each round: the replay's top *k* teams by probability of reaching it, where *k* is "
+        "the number of places in that round."
+    )
+    cols = st.columns(len(rc["rounds"]))
+    for col, rnd in zip(cols, rc["rounds"], strict=True):
+        with col:
+            st.metric(_ROUND_NOUN[rnd["stage"]], f"{rnd['hits']} / {rnd['places']}")
+
+    st.caption(
+        "One tournament can't validate a model: a 30% favourite still fails to win 70% of the "
+        "time, and the replay also missed real surprises (see the table). The fairer yardstick is "
+        "calibration over thousands of matches — see *Under the Hood*."
+    )
+
+    with st.expander("📋 Every team — how far they really went vs the replay's odds"):
+        teams = rc["teams"].copy()
+        teams["actual"] = teams["actual"].map(_STAGE_LABEL)
+        st.dataframe(
+            teams.rename(
+                columns={
+                    "team": "Team",
+                    "group": "Grp",
+                    "actual": "Actually reached",
+                    "p_actual": "Replay: P(reaching that)",
+                    "p_title": "Replay: title odds",
+                    "title_rank": "Title-odds rank",
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+            column_config={
+                c: st.column_config.ProgressColumn(
+                    c, format="percent", min_value=0.0, max_value=1.0
+                )
+                for c in ("Replay: P(reaching that)", "Replay: title odds")
+            },
+            height=460,
+        )
+
+
+def tab_replay(wc, matches, actual, locked, ko_locked, fetched_at, source) -> None:
+    """Post-tournament Simulate view: re-run 2026 from the eve of the opener, then grade it."""
+    cutoff = replay.cutoff_from_wc(wc)
+    r_artifact = load_replay_artifact()
+    if r_artifact is None:
+        _simulator_header()
+        st.warning(
+            "The pre-tournament model (`models/model_pre_wc.joblib`) is missing — run "
+            "`python scripts/train_pre_wc.py` to build it."
+        )
+        return
+    r_state = load_replay_state(matches, str(cutoff.date()))
+    r_predictor = model.Predictor(r_artifact, r_state)
+    fifa_rank = load_replay_fifa_positions(str(cutoff.date()))
+
+    _model_caption(r_artifact, r_state, prefix="Pre-tournament replay model")
+    _simulator_header()
+    eve = (cutoff - pd.Timedelta(days=1)).strftime("%d %B %Y").lstrip("0")
+    st.info(
+        "🏁 **The 2026 World Cup is over**, so there is nothing left to simulate forward. Instead, "
+        "this is a **pre-tournament replay**: it re-plays all 104 matches *as the model saw them on "
+        f"the eve of the opener* ({eve}). **No 2026 World Cup result is used** — not in the model, "
+        "not in team strength, not in the bracket."
+    )
+    _render_article_callout()
+    _render_replay_inputs(r_artifact, r_state, cutoff, len(fifa_rank))
+
+    n_sims, seed, run = _sim_controls("Run pre-tournament replay")
+    sim = get_simulator(
+        r_predictor,
+        replay.pre_tournament_wc(wc),
+        fifa_rank,
+        f"replay|{r_artifact.trained_through}|{r_state.as_of.date()}|fifa{len(fifa_rank)}",
+    )
+    if run:
+        with st.spinner(f"Replaying {n_sims:,} tournaments from the pre-tournament state …"):
+            st.session_state["replay_result"] = sim.run(n_sims=int(n_sims), seed=int(seed))
+
+    result = st.session_state.get("replay_result")
+    if result is None:
+        st.info("Set the options and hit **Run pre-tournament replay**.")
+        return
+
+    # The bracket shows the simulation only — no real scores are stamped on its cards.
+    _render_sim_views(result, getattr(r_state, "ratings", None), played={}, ko_played={})
+
+    st.divider()
+    if actual is None:
+        st.caption(
+            "Real results couldn't be loaded right now (feed offline), so the reality check is "
+            "hidden — the replay itself never uses them."
+        )
+        return
+    _render_reality_check(result, actual, ko_locked)
+    st.caption(
+        f"Results used for grading: {len(locked)} group + {len(ko_locked)} knockout matches · "
+        f"as of {fetched_at} · source: {source}"
+    )
 
 
 def _team_sim_result(sim, key: str, n_sims: int, seed: int):
@@ -981,14 +1281,12 @@ def main():
             snapshot = live_snapshot
         home.render_home(predictor, artifact, explainer, wc, state, snapshot)
     else:
-        st.caption(
-            f"Model trained through **{artifact.trained_through}** · "
-            f"match history to **{state.as_of.date()}** · {len(state.teams)} national teams."
-        )
+        if view != home.VIEW_SIMULATE:  # Simulate captions its own model (the replay uses another)
+            _model_caption(artifact, state)
         if view == home.VIEW_PREDICT:
             tab_predictor(predictor, artifact, explainer, wc, state, rosters)
         elif view == home.VIEW_SIMULATE:
-            tab_simulator(predictor, artifact, wc)
+            tab_simulator(predictor, artifact, wc, matches)
         elif view == home.VIEW_TEAM:
             tab_my_team(predictor, artifact, explainer, wc, state)
         else:

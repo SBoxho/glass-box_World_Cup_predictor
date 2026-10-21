@@ -45,6 +45,9 @@ SQUAD_STRENGTH_PATH = PROCESSED_DIR / "squad_strength.parquet"  # derived per-(n
 ELO_HISTORY_PATH = PROCESSED_DIR / "elo_history.parquet"
 
 MODEL_PATH = MODELS_DIR / "model.joblib"
+# Pre-tournament replay model: same recipe, trained only on matches *before* the 2026 opener, so the
+# post-tournament replay in the Simulate tab never sees a 2026 World Cup result (core.replay).
+REPLAY_MODEL_PATH = MODELS_DIR / "model_pre_wc.joblib"
 METRICS_PATH = MODELS_DIR / "metrics.json"
 RELIABILITY_PLOT_PATH = MODELS_DIR / "reliability.png"
 SHAP_SUMMARY_PATH = MODELS_DIR / "shap_summary.png"

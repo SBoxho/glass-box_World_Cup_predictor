@@ -407,7 +407,8 @@ def render_hero(predictor, artifact, explainer, wc, snapshot, now, tz) -> None:
         _hero_message(
             "Tournament complete",
             "That's a wrap on World Cup 2026",
-            f"Last result on file: {score}. Explore the run with the tools below.",
+            f"Last result on file: {score}. Replay it from the pre-tournament state in "
+            "🏆 Simulate, or explore the run with the tools below.",
             height=210,
         )
     else:
