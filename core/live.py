@@ -115,7 +115,9 @@ def parse_openfootball_knockout(data: dict) -> list[dict]:
     ``home_score``/``away_score`` are the goals that stood — the *extra-time* score when the tie was
     settled in ET (a level full-time line would misread as a draw), else full time, oriented
     ``[home, away]`` for display; ``pens`` is the ``[home, away]`` shootout tally when
-    ``decided_by == "pen"``; ``decided_by`` is ``"pen"``/``"et"``/``"ft"``.
+    ``decided_by == "pen"``; ``decided_by`` is ``"pen"``/``"et"``/``"ft"``. ``round`` is the feed's
+    round label (e.g. ``"Quarter-final"``, ``"Match for third place"``) or ``None`` — the
+    post-tournament replay grades itself by it (:func:`core.replay.actual_stage_reached`).
 
     A match is included only when it is (a) *not* group stage — no truthy ``group`` field — and
     (b) actually decided. Unplayed fixtures, still-level ties with no ET/shootout data, and matches
@@ -151,6 +153,7 @@ def parse_openfootball_knockout(data: dict) -> list[dict]:
             "away_score": goals[1] if goals is not None else None,
             "winner": winner,
             "decided_by": decided_by,
+            "round": (str(m.get("round")).strip() or None) if m.get("round") else None,
         }
         if decided_by == "pen":  # ``decisive`` is the shootout tally, oriented [team1, team2]
             rec["pens"] = [decisive[0], decisive[1]]
