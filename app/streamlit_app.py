@@ -23,6 +23,7 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # app/ -> `components`
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # project root -> `core`
 
+from components import article as article_view  # noqa: E402  (presentation component)
 from components import bracket as bracket_view  # noqa: E402  (presentation component)
 from components import home  # noqa: E402  (presentation component; imports from core)
 from components import team_page as team_page_view  # noqa: E402  (presentation component)
@@ -212,15 +213,6 @@ def load_replay_fifa_positions(cutoff: str):
         )
     except Exception:  # optional tiebreaker enrichment — never let it take the whole app down
         return {}
-
-
-@st.cache_data(show_spinner=False)
-def load_article_snapshot():
-    """Headline numbers of the 1M-run simulation behind the mid-tournament Medium article."""
-    try:
-        return json.loads((config.BASE_DIR / "reports" / "sim_1M.json").read_text(encoding="utf-8"))
-    except Exception:
-        return None
 
 
 @st.cache_data(ttl=LIVE_REFRESH_SECS, show_spinner=False)
@@ -773,11 +765,6 @@ def tab_simulator(predictor, artifact, wc, matches):
 # --------------------------------------------------------------------------------------
 # Pre-tournament replay (after the final): re-simulate 2026 with no look-ahead
 # --------------------------------------------------------------------------------------
-ARTICLE_URL = (
-    "https://medium.com/@SebastienB./i-simulated-the-fifa-2026-world-cup-1-million-times-here-is-"
-    "what-the-model-predicts-bf68aa9d23fb"
-)
-
 _STAGE_LABEL = {
     "Group": "Group stage",
     "R32": "Round of 32",
@@ -798,24 +785,7 @@ _ROUND_NOUN = {
 
 def _render_article_callout() -> None:
     """Link the mid-tournament Medium article, with the 1M-run numbers it was written from."""
-    snap = load_article_snapshot()
-    line = (
-        "📝 **Written during the tournament:** "
-        f"[I simulated the FIFA 2026 World Cup 1 million times]({ARTICLE_URL})"
-    )
-    meta = (snap or {}).get("meta", {})
-    top = (snap or {}).get("champion_ranking", [])[:2]
-    fin = (snap or {}).get("most_likely_final", {})
-    n_locked = meta.get("n_locked_group_results")
-    if top and n_locked is not None:
-        odds = ", ".join(f"**{t['team']} {t['p_champion']:.1%}**" for t in top)
-        line += (
-            f" — a {meta.get('n_sims', 0):,}-run simulation on "
-            f"{str(meta.get('live_fetched_at', ''))[:10]} ({n_locked} of 72 group games played, no "
-            f"knockout game yet) had {odds} as the top two, and "
-            f"**{' vs '.join(fin.get('teams', []))}** as the most likely final."
-        )
-    st.markdown(line)
+    st.markdown(article_view.article_markdown())
     st.caption(
         "That article used the live app (the production model, with the group results played so "
         "far locked in). The replay below is stricter still: it rewinds to *before* the first match."

@@ -5,6 +5,8 @@ tabs. It answers, in order of relevance to *this moment*:
 
 * a **hero** for the most relevant match — live now, or a ticking countdown to the next one (with
   the model's prediction + top SHAP drivers once it is inside 24 hours);
+* a **called-it card** linking the mid-tournament Medium article and the numbers it was written
+  from (rendered by :mod:`components.article`), with a jump to the pre-tournament replay;
 * the **today's matches** and **recently finished** strips (rendered by :mod:`components.matchday`);
 * three **action cards** routing to the Match Predictor, Tournament Simulator, and bracket.
 
@@ -25,7 +27,7 @@ from datetime import UTC, datetime
 import streamlit as st
 import streamlit.components.v1 as components
 
-from components import matchday
+from components import article, matchday
 from core import explain
 from core import fixtures as fx
 from core.model import predict_from_features
@@ -428,6 +430,27 @@ def _goto(view: str) -> None:
     st.session_state[NAV_KEY] = view
 
 
+def render_article_card() -> None:
+    """The mid-tournament Medium article: a dated, public record of what the model said."""
+    with st.container(border=True):
+        st.markdown(article.article_markdown())
+        text, button = st.columns([3, 1], vertical_alignment="center")
+        with text:
+            st.caption(
+                "Compare it with a stricter test: the 🏆 Simulate tab replays the whole tournament "
+                "from the eve of the opener, using no 2026 result, then checks it against what "
+                "actually happened."
+            )
+        with button:
+            st.button(
+                "See the replay →",
+                key="article_replay",
+                width="stretch",
+                on_click=_goto,
+                args=(VIEW_SIMULATE,),
+            )
+
+
 def render_action_cards() -> None:
     st.markdown("#### Dig into the model")
     cards = [
@@ -500,6 +523,8 @@ def render_home(predictor, artifact, explainer, wc, state, snapshot) -> None:
             f"📡 Schedule as of {snapshot['fetched_at']} · source: {snapshot.get('source')} · "
             f"times shown in {tz_label}"
         )
+
+    render_article_card()
 
     st.divider()
     matchday.render_today(ctx)
